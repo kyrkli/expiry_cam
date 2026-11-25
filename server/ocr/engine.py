@@ -5,6 +5,8 @@ import cv2
 import numpy as np
 from paddleocr import PaddleOCR
 from ocr.parser import parse_expiry_date
+from calendar import monthrange
+from datetime import date
 from typing import Optional
 import time
 import re
@@ -186,7 +188,28 @@ def _rotate_image(img: np.ndarray, angle: float) -> np.ndarray:
                           borderValue=255)
 
 
-def run_ocr(image: np.ndarray, filename: str = "default", min_conf: float = MIN_CONF) -> str:
+def _date_quality(text: str, today: Optional[date]) -> int:
+    """0 = no date, 1 = only a date that is already over, 2 = usable date."""
+    parsed = parse_expiry_date(text, today)
+    if parsed is None:
+        return 0
+    if today is None:
+        return 2
+    d, m, y = (int(x) for x in parsed.split("-"))
+    if y == 0:
+        return 2
+    day = monthrange(y, m)[1] if d == 0 else d
+    return 1 if date(y, m, day) < today else 2
+
+
+def run_ocr(image: np.ndarray, filename: str = "default", min_conf: float = MIN_CONF,
+            today: Optional[date] = None) -> str:
+    """OCR text that contains the expiry date.
+
+    With 'today' a date that is already over does not stop the search: it is often the
+    production date printed next to the expiry date. It is only returned if no later
+    date is found anywhere (then the product really is expired).
+    """
     if image is None:
         return ""
 
@@ -199,27 +222,23 @@ def run_ocr(image: np.ndarray, filename: str = "default", min_conf: float = MIN_
 
     best_text = ""
     best_conf = 0.0
-    best_parsed = False
+    best_parsed = False     # a usable date was found: stop searching
+    best_past = False       # only a date that is already over was found so far
 
     def update_best(text: str, conf: float):
-        nonlocal best_text, best_conf, best_parsed
-        # Try original text
-        parsed = parse_expiry_date(text) is not None
-        if parsed and not best_parsed:
-            best_text = text
-            best_conf = conf
-            best_parsed = True
-            return
-        # Try digit-filtered text
+        nonlocal best_text, best_conf, best_parsed, best_past
+        # Try the original text, then the digit-filtered text
         digit_only = ' '.join(re.sub(r'[^0-9./\-:\s]', ' ', text).split())
-        if digit_only and digit_only != text:
-            parsed = parse_expiry_date(digit_only) is not None
-            if parsed and not best_parsed:
-                best_text = digit_only
-                best_conf = conf
-                best_parsed = True
+        variants = [text] + ([digit_only] if digit_only and digit_only != text else [])
+        for candidate in variants:
+            quality = _date_quality(candidate, today)
+            if quality == 2 and not best_parsed:
+                best_text, best_conf, best_parsed = candidate, conf, True
                 return
-        if not best_parsed and conf > best_conf:
+            if quality == 1 and not best_parsed and not best_past:
+                # Keep it as a fallback, but go on looking for a later date
+                best_text, best_conf, best_past = candidate, conf, True
+        if not best_parsed and not best_past and conf > best_conf:
             best_text = text
             best_conf = conf
 

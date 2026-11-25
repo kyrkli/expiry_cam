@@ -632,7 +632,7 @@ tripped; afterwards the battery showed about 7 V and works normally.
 - [x] OCR benchmark writes into its own `bench.db`
 - [x] Move both devices to the new layout (first deploy, `system/install.sh`, remove the old
       `~/expiry_cam/.git` on the Pi 5)
-- [ ] Add the KiCad files to `hardware/`
+- [x] Add the KiCad files to `hardware/`
 - [ ] Daily backup of `expirycam.db` (`sqlite3 expirycam.db ".backup …"`)
 - [ ] Clean up `uploads/failed/` older than 30 days
 - [ ] Protect the scanner's SD card from power-off with the rocker without shutdown (overlay / habit)
@@ -644,3 +644,8 @@ tripped; afterwards the battery showed about 7 V and works normally.
 
 **Bot ideas**
 - [ ] `/add Milch 20.11` — add a product by hand
+
+# 12. Ideas for the future
+- [ ] Add axelerometer to the scanner: wake up the Pi when it is picked up during sleep mode.
+- [ ] Change the camera and the mikrocontroller to a smaller form factor, so the scanner can be built smaller and cheaper.
+- 

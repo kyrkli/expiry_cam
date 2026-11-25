@@ -104,13 +104,14 @@ def _process_image(data: bytes) -> dict:
 
     from ocr.engine import run_ocr
     global _ocr_ready
+    today = date.today()
     t0 = time.monotonic()
-    text = run_ocr(img, filename=name)
+    text = run_ocr(img, filename=name, today=today)
     seconds = round(time.monotonic() - t0, 2)
     _ocr_ready = True
 
-    parsed = parse_expiry_date(text) if text else None
-    expires_on = dates.resolve(parsed, date.today())
+    parsed = parse_expiry_date(text, today) if text else None
+    expires_on = dates.resolve(parsed, today)
     result = {"scan_id": None, "expiry": None, "expiry_display": None, "expires_on": None,
               "days_left": None, "expired": False, "raw_text": text, "ocr_seconds": seconds}
 
