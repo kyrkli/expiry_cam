@@ -5,7 +5,7 @@ from typing import Optional
 
 import requests
 
-import db
+from core import db
 
 log = logging.getLogger("products")
 

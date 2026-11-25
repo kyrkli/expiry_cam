@@ -12,11 +12,11 @@ from datetime import date
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
-import dates
+from core import dates
 
 log = logging.getLogger("db")
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent      # server root (~/expiry_cam)
 DB_PATH = Path(os.environ.get("EXPIRYCAM_DB", BASE_DIR / "expirycam.db"))
 UPLOAD_DIR = BASE_DIR / "uploads"
 

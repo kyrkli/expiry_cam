@@ -33,10 +33,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-import dates
-import db
-import products
-from parser import parse_expiry_date
+from core import dates, db, products
+from ocr.parser import parse_expiry_date
 
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = db.UPLOAD_DIR
@@ -63,7 +61,7 @@ def _warm_up() -> None:
     """Load the OCR models at startup (runs in the OCR thread), the first load is slow."""
     global _ocr_ready
     try:
-        from ocr_engine import _get_ocr
+        from ocr.engine import _get_ocr
         t0 = time.monotonic()
         ocr = _get_ocr()
         ocr.ocr(np.full((64, 256, 3), 255, np.uint8), cls=True)   # first inference
@@ -82,7 +80,7 @@ def _process_image(data: bytes) -> dict:
     now = datetime.now()
     name = f"{now:%H%M%S}_{uuid.uuid4().hex[:6]}.jpg"
 
-    from ocr_engine import run_ocr
+    from ocr.engine import run_ocr
     global _ocr_ready
     t0 = time.monotonic()
     text = run_ocr(img, filename=name)

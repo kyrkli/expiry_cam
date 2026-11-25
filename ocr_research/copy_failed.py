@@ -1,7 +1,9 @@
 import os
 import shutil
 
-# Список нераспознанных файлов
+import _paths
+
+# Photos the OCR did not recognize (from a benchmark run)
 failed_files = [
     "006_frame_00-03-2027_18h14m07s.jpg", "007_frame_00-03-2027_18h14m18s.jpg",
     "013_frame_00-09-2025_17h29m50s.jpg", "015_frame_00-09-2025_17h31m11s.jpg",
@@ -25,8 +27,8 @@ failed_files = [
     "098_frame_31-10-2027_16h44m52s.jpg"
 ]
 
-source_dir = "dataset"
-target_dir = "unsuccessful_parse"
+source_dir = str(_paths.DATASET_DIR)
+target_dir = str(_paths.FAILED_DIR)
 
 os.makedirs(target_dir, exist_ok=True)
 
@@ -39,6 +41,6 @@ for f in failed_files:
         shutil.copy2(src_path, dst_path)
         copied += 1
     else:
-        print(f"Файл не найден в {source_dir}: {f}")
+        print(f"File not found in {source_dir}: {f}")
 
-print(f"Готово! Скопировано {copied} файлов в папку {target_dir}")
+print(f"Done: copied {copied} files to {target_dir}")

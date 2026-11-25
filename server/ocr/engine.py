@@ -4,7 +4,7 @@ os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 import cv2
 import numpy as np
 from paddleocr import PaddleOCR
-from parser import parse_expiry_date
+from ocr.parser import parse_expiry_date
 from typing import Optional
 import time
 import re

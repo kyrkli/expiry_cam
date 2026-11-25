@@ -4,9 +4,10 @@ from collections import defaultdict
 from statistics import median
 from time import perf_counter
 
-from db import init_db, insert_scan, list_recent
-from parser import parse_expiry_date
-from ocr_engine import run_ocr
+import _paths  # noqa: F401  server code on sys.path, own database (bench.db)
+from core.db import init_db, insert_scan, list_recent
+from ocr.parser import parse_expiry_date
+from ocr.engine import run_ocr
 import cv2
 import subprocess
 
@@ -51,7 +52,7 @@ def capture_frame(save_path="temp_frame.jpg") -> None:
         return None
 
 def main() -> None:
-    dataset_path = "dataset"
+    dataset_path = str(_paths.DATASET_DIR)
     
     # Dictionaries to collect tag statistics
     tag_total = defaultdict(int)

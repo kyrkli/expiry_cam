@@ -21,8 +21,7 @@ from typing import List, Optional
 
 import requests
 
-import dates
-import db
+from core import dates, db
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(name)s %(levelname)s: %(message)s")

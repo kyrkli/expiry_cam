@@ -7,27 +7,21 @@ venv/
 # Data that lives only on the devices
 scanner/captures/
 server/uploads/
-server/dataset/
-server/unsuccessful_parse/
+ocr_research/dataset/
+ocr_research/unsuccessful_parse/
+latest.jpg
+temp_frame.jpg
 *.db
 *.db-wal
 *.db-shm
+*.sqlite3
+dont_track/
 
 # Secrets
 bot.env
+*.env
 .env
 
 # Editors
 .vscode/
 .idea/
-
-
-.github/
-
-# Temporary image files
-*.jpg
-*.png
-
-# Environment variables (for Telegram Bot token later)
-*.env   
-dont_track/

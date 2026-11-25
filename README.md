@@ -25,10 +25,9 @@ product name and keeps the list, and a Telegram bot reminds you what is about to
 ### Repository
 
 ```
-expiry-cam/
-  README.md
-  .gitignore
-  deploy.sh            copies one part of the project to its Pi and restarts its service
+expiry_cam/
+  README.md, LICENSE, .gitignore
+  deploy.sh            copies one part of the project to its Pi and restarts its services
   scanner/             → ~/expiry_cam on the scanner
     app.py             main program
     config.py          settings (values of this particular scanner)
@@ -38,10 +37,16 @@ expiry-cam/
     net/               client (talking to the server)
     tools/             gm67_setup, calibrate, oled_test, i2c_test.sh
     system/            systemd service, shutdown hook, install.sh
-  server/              → ~/expiry_cam on the Pi 5 (being restructured)
-  ocr_research/        OCR experiments, benchmark, dataset scripts (planned, not deployed)
-  hardware/            KiCad schematic, parts list (planned)
-  docs/                images: bot avatar, screen mockups (planned)
+  server/              → ~/expiry_cam on the Pi 5
+    server.py          HTTP API (uvicorn server:app)
+    bot.py             Telegram bot
+    core/              db, dates, products (Open Food Facts)
+    ocr/               engine (PaddleOCR pipeline), parser (date in text)
+    system/            systemd services, install.sh
+    bot.env.example, requirements.txt
+  ocr_research/        → ~/expiry_cam/ocr_research on the Pi 5: dataset tools, benchmark
+  hardware/            parts list, KiCad schematic
+  docs/                images: OLED screens, bot avatar
 ```
 
 Code is edited on the PC and gets to the devices with `deploy.sh` (section 9).
@@ -83,6 +88,9 @@ The photo waits 3 minutes for its barcode ("Scan barcode" on the screen, camera 
 status bar), then it is dropped. If no date is found, nothing is stored — take the photo again.
 
 **Screen** (all screens are in `ui/screens.py`):
+
+![OLED screens](docs/oled_screens.png)
+
 - status bar: server connection (Wi-Fi icon, a cross = server not reachable),
   camera icon = a photo waits for its barcode, battery level;
 - "HOLD STILL" on a white background — the photo is being taken, hold steady; as soon as it changes
@@ -385,17 +393,19 @@ may be in USB mode) and **"9600bps"** from the manual.
 | File | What it does |
 |---|---|
 | `server.py` | HTTP API (Starlette + uvicorn), OCR in one dedicated thread |
-| `db.py` | SQLite: scans, product cache, bot chats; migrates old tables by itself |
-| `dates.py` | parser strings → real dates, display format |
-| `products.py` | barcode → product name: cache first, then Open Food Facts |
 | `bot.py` | Telegram bot (section 8) |
-| `ocr_engine.py` | OCR pipeline (PaddleOCR, 2.x API, language german) |
-| `parser.py` | finds the date in the OCR text |
-| `main.py` | OCR benchmark on the dataset (best result 70/100, median 3.4 s) |
-| dataset scripts | collect frames into `dataset/`, copy failed ones to `unsuccessful_parse/` |
-| `expiry-server.service`, `expiry-bot.service` | systemd services |
+| `core/db.py` | SQLite: scans, product cache, bot chats; migrates old tables by itself |
+| `core/dates.py` | parser strings → real dates, display format |
+| `core/products.py` | barcode → product name: cache first, then Open Food Facts |
+| `ocr/engine.py` | OCR pipeline (PaddleOCR, 2.x API, language german) |
+| `ocr/parser.py` | finds the date in the OCR text |
+| `system/` | `expiry-server.service`, `expiry-bot.service`, `install.sh` |
 | `bot.env.example` | bot settings template |
-| `requirements-server.txt` | `starlette uvicorn python-multipart requests` |
+| `requirements.txt` | Python packages (PaddleOCR stack + `starlette uvicorn python-multipart requests`) |
+
+The database (`expirycam.db`), photos (`uploads/`) and `bot.env` live in `~/expiry_cam` on the Pi 5
+only. The OCR dataset and benchmark are in [`ocr_research/`](ocr_research/README.md)
+(best result 70/100, median 3.4 s).
 
 ### API
 
@@ -413,7 +423,7 @@ GET  /scans?limit=20       latest records
 Manual check:
 ```bash
 curl http://localhost:8000/health
-curl -F file=@dataset/<photo>.jpg http://localhost:8000/image     # creates a database record!
+curl -F file=@<photo>.jpg http://localhost:8000/image     # creates a database record!
 curl "http://localhost:8000/scans?limit=5"
 ```
 
@@ -448,14 +458,15 @@ curl "http://localhost:8000/scans?limit=5"
 
 ### Installation
 
+After the first `./deploy.sh server`, on the Pi 5:
+
 ```bash
 cd ~/expiry_cam
 source .venv/bin/activate
-pip install -r requirements-server.txt
-python -m uvicorn server:app --host 0.0.0.0 --port 8000     # test run
-sudo cp expiry-server.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now expiry-server
+pip install -r requirements.txt
+python -m uvicorn server:app --host 0.0.0.0 --port 8000     # test run, Ctrl+C
+sudo system/install.sh        # services + sudo rule for deploy.sh (restart without password)
+sudo systemctl restart expiry-server expiry-bot
 ```
 
 The services run as the user `rasient`, so PaddleOCR finds the models it already downloaded into
@@ -497,14 +508,13 @@ with the ID of their chat. Private chat: the ID is the person's ID. Family group
    source .venv/bin/activate
    python bot.py                 # everyone sends /start to the bot and gets their ID
    ```
-3. Ctrl+C, put the IDs (comma separated) into `TELEGRAM_ALLOWED_IDS`, install the service:
+3. Ctrl+C, put the IDs (comma separated) into `TELEGRAM_ALLOWED_IDS`, start the service
+   (installed by `system/install.sh`):
    ```bash
-   sudo cp expiry-bot.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now expiry-bot
+   sudo systemctl restart expiry-bot
    ```
 4. Everyone sends `/start` once more — this subscribes them to the reminders.
-5. Avatar: @BotFather → `/setuserpic` → `expiry_bot_avatar.png`.
+5. Avatar: @BotFather → `/setuserpic` → [`docs/bot_avatar.png`](docs/bot_avatar.png).
 
 ### `bot.env`
 
@@ -545,10 +555,14 @@ Host pi5
 ```bash
 ./deploy.sh scanner --dry-run     # what would change ("deleting" lines = removed on the device)
 ./deploy.sh scanner               # copy and restart expiry-cam
+./deploy.sh server                # copy and restart expiry-server + expiry-bot
+./deploy.sh research              # ocr_research/ → pi5:~/expiry_cam/ocr_research/
 ssh scanner journalctl -u expiry-cam -f     # logs right from the PC
+ssh pi5 journalctl -u expiry-bot -f
 ```
 
-`deploy.sh` never touches `venv/`, `captures/`, the database, `uploads/` or `bot.env`.
+`deploy.sh` never touches venvs, `captures/`, the database, `uploads/`, `bot.env`, the dataset
+or loose `*.jpg`/`*.png` files on the Pi 5.
 Everything else on the device mirrors the repo: a file removed from the repo is removed there too.
 
 ### On the devices
@@ -611,12 +625,14 @@ tripped; afterwards the battery showed about 7 V and works normally.
 ## 11. Open tasks
 
 **Structure and reliability**
-- [x] One repository for the scanner and the server (`.gitignore` ready)
+- [x] One repository for the scanner and the server
 - [x] Scanner split into folders (`hw/`, `ui/`, `net/`, `tools/`, `system/`)
+- [x] Server split into folders (`core/`, `ocr/`, `system/`), OCR experiments in `ocr_research/`
 - [x] Deploy script `deploy.sh`
-- [ ] Server: sort `server/`, move OCR experiments to `ocr_research/`, `system/` folder like the scanner
-- [ ] `hardware/` (KiCad schematic) and `docs/` (images)
-- [ ] OCR benchmark `main.py` — its own database (`EXPIRYCAM_DB=bench.db`), not the production one
+- [x] OCR benchmark writes into its own `bench.db`
+- [ ] Move both devices to the new layout (first deploy, `system/install.sh`, remove the old
+      `~/expiry_cam/.git` on the Pi 5)
+- [ ] Add the KiCad files to `hardware/`
 - [ ] Daily backup of `expirycam.db` (`sqlite3 expirycam.db ".backup …"`)
 - [ ] Clean up `uploads/failed/` older than 30 days
 - [ ] Protect the scanner's SD card from power-off with the rocker without shutdown (overlay / habit)

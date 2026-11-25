@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Copy one part of the project to its Raspberry Pi and restart its service(s).
 #
-#   ./deploy.sh scanner             copy scanner/ to the hand scanner, restart expiry-cam
-#   ./deploy.sh server              copy server/ to the Pi 5, restart expiry-server + expiry-bot
-#   ./deploy.sh scanner --dry-run   only show what would change, copy nothing
+#   ./deploy.sh scanner             scanner/      -> scanner:~/expiry_cam/,  restart expiry-cam
+#   ./deploy.sh server              server/       -> pi5:~/expiry_cam/,      restart expiry-server + expiry-bot
+#   ./deploy.sh research            ocr_research/ -> pi5:~/expiry_cam/ocr_research/  (no restart)
+#   ./deploy.sh <part> --dry-run    only show what would change, copy nothing
 #
 # Hosts come from ~/.ssh/config (Host scanner / Host pi5) or SCANNER_HOST / SERVER_HOST.
-# Device-only files (venv, photos, database, bot.env, ...) are excluded: they are
+# Device-only files (venv, photos, database, bot.env, dataset, ...) are excluded: they are
 # never copied and never deleted. Everything else on the device mirrors the repo
 # (files removed from the repo are removed there too, see "deleting" in the output).
 set -euo pipefail
@@ -19,27 +20,38 @@ dry=""
 case "$part" in
   scanner)
     host="${SCANNER_HOST:-scanner}"
+    dest="expiry_cam/"
     services=(expiry-cam)
     excludes=(venv/ captures/ ".lgd-nfy*")          # .lgd-nfy* = gpio pipes of the running app
     ;;
   server)
     host="${SERVER_HOST:-pi5}"
+    dest="expiry_cam/"
     services=(expiry-server expiry-bot)
-    excludes=(.venv/ venv/ uploads/ dataset/ unsuccessful_parse/ bot.env "*.db" "*.db-wal" "*.db-shm")
+    excludes=(.venv/ venv/ uploads/ ocr_research/ dataset/ unsuccessful_parse/ dont_track/
+              bot.env "*.db" "*.db-wal" "*.db-shm" "*.jpg" "*.png")
+    ;;
+  research)
+    host="${SERVER_HOST:-pi5}"
+    dest="expiry_cam/ocr_research/"
+    services=()
+    excludes=(dataset/ unsuccessful_parse/ "*.db" "*.db-wal" "*.db-shm" "*.jpg" "*.png")
     ;;
   *)
-    echo "usage: $0 scanner|server [--dry-run]" >&2
+    echo "usage: $0 scanner|server|research [--dry-run]" >&2
     exit 1
     ;;
 esac
-[[ -d "$part" ]] || { echo "folder $part/ not found" >&2; exit 1; }
+src="$part/"
+[[ "$part" == "research" ]] && src="ocr_research/"
+[[ -d "$src" ]] || { echo "folder $src not found" >&2; exit 1; }
 
 args=(-av --delete --exclude "__pycache__/" --exclude ".git/")
 for e in "${excludes[@]}"; do
   args+=(--exclude "$e")
 done
 
-rsync "${args[@]}" $dry "$part/" "$host:expiry_cam/"
+rsync "${args[@]}" $dry "$src" "$host:$dest"
 
 if [[ -n "$dry" ]]; then
   echo "(dry run: nothing was changed)"
@@ -48,4 +60,4 @@ fi
 for s in "${services[@]}"; do
   ssh -t "$host" sudo systemctl restart "$s"
 done
-echo "deployed $part/ to $host"
+echo "deployed $src to $host:$dest"

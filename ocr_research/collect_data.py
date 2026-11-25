@@ -1,11 +1,13 @@
 import os
-import cv2
-from datetime import datetime
-import cv2
 import subprocess
+from datetime import datetime
+
+import cv2
+
+import _paths
 
 # Configuration
-DATASET_DIR = "./dataset"
+DATASET_DIR = str(_paths.DATASET_DIR)
 
 def capture_frame(save_path="temp_frame.jpg") -> None:
     print("📸 Camera: Focusing and taking a picture...")
