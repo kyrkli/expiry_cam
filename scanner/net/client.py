@@ -121,11 +121,16 @@ def send_image(path: Path) -> dict:
     return res
 
 
-def send_barcode(code: str, scan_id) -> dict:
+def send_barcode(code: str, scan_id, no_date: bool = False) -> dict:
     """Send a barcode; scan_id links it to the last photo (None = no photo).
+    no_date = the last photo found no date: save the product without one.
 
-    Returns {"barcode", "product", "brand", "quantity", "scan_id", "expiry_display"}.
+    Returns {"barcode", "product", "brand", "quantity", "scan_id", "expiry_display",
+             "count", "saved"}.
     """
-    res = _post("/barcode", BARCODE_TIMEOUT, json={"barcode": code, "scan_id": scan_id})
+    body = {"barcode": code, "scan_id": scan_id}
+    if no_date:
+        body["no_date"] = True
+    res = _post("/barcode", BARCODE_TIMEOUT, json=body)
     log.info("barcode %s (scan %s) -> %s", code, scan_id, res.get("product"))
     return res

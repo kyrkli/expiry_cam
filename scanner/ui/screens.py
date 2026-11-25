@@ -166,7 +166,12 @@ def draw_idle(d, t, online=None):
     _hints(d)
 
 
-def draw_pending(d, t, date=""):
+def draw_pending(d, t, date="", no_date=False):
+    if no_date:                      # the last photo found no date
+        center(d, 15, "No date", B16)
+        center(d, 34, "retake or scan code", F10)
+        _hints(d)
+        return
     center(d, 15, f"Photo: {date}", F10)
     center(d, 29, "Scan barcode", B16)
     _hints(d, click=False)
@@ -227,6 +232,16 @@ def draw_expired(d, t, date="", days_left=None):
 
 
 def draw_product(d, t, name=None, code="", saved=False, date=None, count=None):
+    if saved and (not name or not date):
+        # Saved, but without a date or a name: it waits in the bot's "Needs info" group
+        center(d, 16, name or "Unknown product", B12)
+        text = "Saved · " + (date or "no date")
+        x = (W - 14 - d.textlength(text, font=F10)) / 2
+        icon_check(d, x, 34)
+        d.text((x + 14, 32), text, font=F10, fill=1)
+        d.rectangle((0, 48, W - 1, H - 1), fill=1)
+        center(d, 50, "Fix in Telegram", F10, fill=0)
+        return
     lines = wrap(d, name, B12) if name else ["Unknown product", code]
     for i, line in enumerate(lines):
         center(d, 16 + i * 15, line, B12 if (name or i == 0) else F10)

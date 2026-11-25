@@ -84,8 +84,17 @@ The battery can only be charged in the `CHARGE` position.
 | Power, double press | Reboot |
 
 **Workflow:** first the photo of the date, then the barcode of the same product.
-The photo waits 3 minutes for its barcode ("Scan barcode" on the screen, camera icon in the
-status bar), then it is dropped. If no date is found, nothing is stored — take the photo again.
+- The photo is only a **draft**: it is not in the bot's list and gets no reminders.
+- Wrong date on the screen → just take the photo again. The new photo replaces the draft,
+  the wrong one is never saved.
+- The right date → scan the barcode: only now the product is saved ("Saved").
+- The draft waits 3 minutes for its barcode ("Scan barcode" on the screen, camera icon in the
+  status bar), then it is dropped.
+- No date found ("Date not found", then "No date · retake or scan code" for 3 minutes):
+  take the photo again. If the date is unreadable no matter what, scan the barcode instead:
+  the product is saved **without a date** and the date is typed in the bot.
+- Only the last photo counts: date → no date → barcode saves the product without a date.
+- A barcode without any photo only shows the product name, nothing is saved.
 
 **Screen** (all screens are in `ui/screens.py`):
 
@@ -99,12 +108,16 @@ status bar), then it is dropped. If no date is found, nothing is stored — take
 - "Already in list · now ×2" (white bar under the product) — the same product with the same
   date was scanned before. It is stored anyway (it may be a second unit); a re-scan by mistake
   is removed in the bot ("Delete 1");
+- "Saved · no date" or "Unknown product" with a white "Fix in Telegram" bar — saved, but the
+  date or the name is missing: it waits in the bot's "❓ Needs info" group (the bot sends
+  no message about it by itself);
 - after 1 minute without a button press the screen dims, after 5 minutes it turns off (OLED burn-in
   protection); any press wakes it up and performs its action right away.
 
 **Telegram bot:** every day at 9:00 it reminds about products that expire within the next 3 days
 (once per product). Expired products are removed automatically after midnight.
-Commands: `/list` (delete with the button under the list), `/soon`, `/lang`, `/stop`, `/start`, `/help`.
+Commands: `/list` (the "✏️ Edit…" button under the list: date, name, delete), `/soon`, `/lang`,
+`/stop`, `/start`, `/help`.
 
 ---
 
@@ -264,6 +277,8 @@ Tools run from `~/expiry_cam` as modules: `venv/bin/python -m tools.<name>`.
   (trigger held) → `RESULT` (result for 5 s) → `IDLE`.
 - Slow actions (photo, upload) run in a separate thread; the result comes back as an `EV_JOB_DONE`
   event together with what to do with the photo that waits for its barcode.
+- A photo without a date waits too (`no_date=True`): a barcode within 3 minutes is sent with
+  `"no_date": true` and the server saves the product without a date.
 - The power button is handled directly in its callback, so it works in every state.
 - Shutdown: the "Shutting down" screen is drawn and **only then** `systemctl poweroff` is called
   (in `finally`, so even a display error cannot block the shutdown).
@@ -416,18 +431,23 @@ only. The OCR dataset and benchmark are in [`ocr_research/`](ocr_research/README
 GET  /health               {"status": "ok", "ocr_ready": true}
 POST /image   (file=JPEG)  {"scan_id", "expiry", "expiry_display", "expires_on", "days_left",
                             "expired", "raw_text", "ocr_seconds"}
+                           date found → stored as a draft (scan_id), a product only after /barcode;
+                           every new photo drops the waiting draft (photo → uploads/rejected/);
                            no date found → scan_id = null, nothing is stored in the database,
                            the photo is kept in uploads/failed/ (for OCR tuning)
-POST /barcode (JSON)       {"barcode": "4000417025005", "scan_id": 12 | null}
+POST /barcode (JSON)       {"barcode": "4000417025005", "scan_id": 12 | null, "no_date": false}
+                           scan_id = the draft → it becomes a product;
+                           no_date = true (the last photo found no date) → a product without a date;
+                           neither → lookup only, nothing is stored
                            → {"barcode", "product", "brand", "quantity", "scan_id", "expiry_display",
-                              "count"}   count = units with this barcode and date in the list
+                              "count", "saved"}   count = units with this barcode and date in the list
 GET  /scans?limit=20       latest records
 ```
 
 Manual check:
 ```bash
 curl http://localhost:8000/health
-curl -F file=@<photo>.jpg http://localhost:8000/image     # creates a database record!
+curl -F file=@<photo>.jpg http://localhost:8000/image     # creates a draft (and drops the scanner's!)
 curl "http://localhost:8000/scans?limit=5"
 ```
 
@@ -444,21 +464,28 @@ curl "http://localhost:8000/scans?limit=5"
   - The database stores the resolved date `expires_on`; it is displayed as printed on the package.
 - **Products** (`products.py`): the barcode is normalized (12-digit UPC-A → 13-digit EAN), then the
   `products` cache table is checked, then the Open Food Facts API v2. Unknown codes are re-checked
-  once a week, network errors are not cached. User-Agent `ExpiryCam/0.1 (hobby project)`, can be
+  once a week, network errors are not cached. A name typed in the bot (`custom_name`) always wins
+  and is used for the next scans of that barcode. Products saved without a name (unknown, or the
+  network was down) are looked up again every night by the bot. User-Agent `ExpiryCam/0.1 (hobby project)`, can be
   changed with the `EXPIRYCAM_USER_AGENT` variable.
 - Open Food Facts has no medicines; food supplements (being food) are sometimes there.
 
 ### Database `expirycam.db`
 
 - Table `scans`: `id, created_at (UTC), raw_text, parsed_expiry_date, expires_on, status,
-  barcode, product_name, product_brand, image_path, source, ocr_seconds, notified`.
-  Products are the rows with `source = 'scanner'`; benchmark rows (`source = 'benchmark'`) are
-  never touched by the bot or the cleanup.
-- `products` — Open Food Facts cache; `bot_chats` — subscribers and language; `bot_state` — when
-  the last cleanup and reminder ran.
+  barcode, product_name, product_brand, image_path, source, ocr_seconds, notified, draft`.
+  Products are the rows with `source = 'scanner'` and `draft = 0`; `draft = 1` is a photo that
+  still waits for its barcode. Benchmark rows (`source = 'benchmark'`) are never touched by the
+  bot or the cleanup.
+- Products may have no date (`expires_on` is empty: saved after a failed photo) or no name
+  (`product_name` is empty): both can be set in the bot.
+- `products` — Open Food Facts cache plus `custom_name` (the name typed in the bot);
+  `bot_chats` — subscribers and language; `bot_state` — when the last cleanup and reminder ran.
 - WAL mode: the server and the bot use the database at the same time.
 - The path can be changed with the `EXPIRYCAM_DB` variable.
-- Photos: `uploads/YYYY-MM-DD/`, deleted together with their product; failed ones in `uploads/failed/`.
+- Photos: `uploads/YYYY-MM-DD/`, deleted together with their product; failed ones (no date) in
+  `uploads/failed/`; photos of drafts that never got a barcode (usually a wrongly read date that
+  was taken again) in `uploads/rejected/`.
 
 ### Installation
 
@@ -485,15 +512,31 @@ the home folder. The Pi 5 time zone must be Europe/Berlin (`timedatectl`).
 - **Reminder** every day at `REMIND_TIME` (09:00): products that expire within the next
   `REMIND_DAYS` (3) days. With `REMIND_ONCE=1` each product is in one reminder only.
   If there is nothing to remind about, the bot stays silent. If the Pi 5 was off at 9:00, the
-  reminder is sent when it starts.
-- **Cleanup** after midnight: expired products are deleted together with their photos.
-- `/list` — everything scanned, in groups: 🔴 within 3 days, 🟠 within 30 days, 🟡 within 3 months,
-  🟢 later. The date on the left (monospace, in a straight column), the name without the brand on
-  the right. The same product with the same date is one line with **×N** (each unit is still its
-  own database row with its own photo). The "🗑 Delete…" button under the list: products as
-  buttons (8 per page) → confirmation → the list is updated in the same message. For ×N the
-  confirmation offers "Delete duplicates (1 left)" — removes every unit except the first scanned
-  one — and, from ×3 on, also "Delete 1" (removes the last scanned unit).
+  reminder is sent when it starts. When a reminder is sent anyway and some products need info,
+  it ends with one line "❓ Needs info: N — /list" (no separate messages).
+- **Cleanup** after midnight: expired products are deleted together with their photos;
+  drafts older than 1 hour (photo without barcode) are dropped, their photos go to `uploads/rejected/`.
+  Products without a date are never deleted automatically. Then products without a name are
+  looked up in Open Food Facts again.
+- `/list` — everything scanned, in groups: ❓ needs info (no date or no name, always on top),
+  🔴 within 3 days, 🟠 within 30 days, 🟡 within 3 months, 🟢 later. The date on the left
+  (monospace, in a straight column, `??.??.??` = no date), the name without the brand on the
+  right. The same product with the same date is one line with **×N** (each unit is still its
+  own database row with its own photo); units without a date are never merged.
+- The "✏️ Edit…" button under the list: products as buttons (8 per page, ❓ ones first) →
+  product card: its name and date, "📅 Date", "🏷 Name", delete. For ×N the card offers
+  "Delete duplicates (1 left)" — removes every unit except the first scanned one — and, from ×3
+  on, also "Delete 1" (removes the last scanned unit). The list is updated in the same message.
+- **📅 Date**: the bot asks for the date and the next message is the answer: `12.03.27`,
+  `12.3.2027`, `2027-03-12`, `03/2027` (month and year = last day of the month), `12.03.`
+  (next such day). A past date or something unreadable is asked again. The new date gets its
+  own reminder. For ×N it changes every unit of the line. After a product without a date, the
+  bot offers the same date for the other units of this product that have none.
+- **🏷 Name** (up to 60 characters): the next message is the name. It goes to every unit with
+  this barcode and is remembered: the next scan shows it on the scanner, Open Food Facts never
+  overwrites it.
+- The question waits 5 minutes; any command or "✖ Cancel" ends it earlier. In a group chat the
+  answer has to be a reply to the bot's question (Telegram privacy mode).
 - `/del_<id>` — delete by number (also works for links in old messages).
 - `/soon` — what expires in the next days (all of them, not only new ones). Reminders and `/soon`
   also show ×N.
@@ -538,7 +581,8 @@ with the ID of their chat. Private chat: the ID is the person's ID. Family group
 ### Internals
 
 The bot talks to the Telegram Bot API directly with `requests` (long polling — no open ports or
-public IP needed) over one persistent connection. The log shows how long each command took, slow
+public IP needed) over one persistent connection. Open questions (date / name) are kept in
+memory: after a restart the button is simply pressed again. The log shows how long each command took, slow
 requests, and a warning if two copies are running. The token never ends up in the log.
 
 ---
@@ -652,6 +696,7 @@ tripped; afterwards the battery showed about 7 V and works normally.
 
 **Bot ideas**
 - [ ] `/add Milch 20.11` — add a product by hand
+- [x] Set the date / the name of a product in the bot (`✏️ Edit…`)
 
 # 12. Ideas for the future
 - [ ] Add axelerometer to the scanner: wake up the Pi when it is picked up during sleep mode.

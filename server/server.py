@@ -6,11 +6,18 @@ Endpoints:
     POST /image             multipart field "file" (JPEG)
                             -> {"scan_id", "expiry", "expiry_display", "expires_on", "days_left",
                                 "expired", "raw_text", "ocr_seconds"}
+                            With a date the photo is stored as a draft: it becomes a product
+                            only when its barcode arrives. Every new photo drops the waiting
+                            draft (its photo goes to uploads/rejected/).
                             No date found: scan_id = null, nothing is stored in the database
                             (the photo goes to uploads/failed/ for OCR tuning).
-    POST /barcode           JSON {"barcode": "...", "scan_id": int | null}
+    POST /barcode           JSON {"barcode": "...", "scan_id": int | null, "no_date": bool}
+                            scan_id = the draft from /image -> it becomes a product;
+                            no_date = true (the last photo found no date) -> a product
+                            without a date, to be completed in the bot;
+                            neither -> only look the product up, nothing is stored
                             -> {"barcode", "product", "brand", "quantity", "scan_id",
-                                "expiry_display", "count"}
+                                "expiry_display", "count", "saved"}
     GET  /scans?limit=50    -> recent scans
 
 Run:
@@ -113,6 +120,12 @@ def _process_image(data: bytes) -> dict:
 
     parsed = parse_expiry_date(text, today) if text else None
     expires_on = dates.resolve(parsed, today)
+
+    # A new photo means the previous one was not right (or not wanted): drop its draft
+    dropped = db.drop_drafts()
+    if dropped:
+        log.info("dropped draft %s (new photo)", ", ".join(map(str, dropped)))
+
     result = {"scan_id": None, "expiry": None, "expiry_display": None, "expires_on": None,
               "days_left": None, "expired": False, "raw_text": text, "ocr_seconds": seconds}
 
@@ -129,8 +142,9 @@ def _process_image(data: bytes) -> dict:
     path.write_bytes(data)
     scan_id = db.insert_scan(raw_text=text, parsed_expiry_date=parsed, confidence=None,
                              image_path=str(path), source="scanner", ocr_seconds=seconds,
-                             expires_on=expires_on.isoformat())
-    log.info("scan %d: %r -> %s = %s (%.1f s)", scan_id, text, parsed, expires_on, seconds)
+                             expires_on=expires_on.isoformat(), draft=True)
+    log.info("scan %d (draft): %r -> %s = %s (%.1f s)", scan_id, text, parsed, expires_on,
+             seconds)
     days_left = (expires_on - date.today()).days
     result.update(scan_id=scan_id, expiry=parsed, expiry_display=dates.display(parsed),
                   expires_on=expires_on.isoformat(), days_left=days_left,
@@ -139,7 +153,7 @@ def _process_image(data: bytes) -> dict:
 
 
 # --- barcode -------------------------------------------------------------------------
-def _process_barcode(code: str, scan_id: Optional[int]) -> dict:
+def _process_barcode(code: str, scan_id: Optional[int], no_date: bool = False) -> dict:
     norm = products.normalize(code)
     if not norm:
         raise ValueError("barcode has no digits")
@@ -158,8 +172,12 @@ def _process_barcode(code: str, scan_id: Optional[int]) -> dict:
         db.attach_barcode(scan_id, norm, name, brand)
         # Same product with the same date already in the list: the scanner shows "×2"
         count = db.count_same(norm, scan.get("expires_on"))
-        log.info("scan %d <- barcode %s (%s)%s", scan_id, norm, name,
+        log.info("scan %d <- barcode %s (%s), saved%s", scan_id, norm, name,
                  f", now x{count} in the list" if count > 1 else "")
+    elif no_date:
+        # The date is unreadable: save the product anyway, the date is set in the bot
+        scan_id = db.insert_product_without_date(norm, name, brand)
+        log.info("scan %d <- barcode %s (%s), saved without a date", scan_id, norm, name)
 
     return {
         "barcode": norm,
@@ -169,6 +187,7 @@ def _process_barcode(code: str, scan_id: Optional[int]) -> dict:
         "scan_id": scan_id,
         "expiry_display": dates.display(scan["parsed_expiry_date"]) if scan else None,
         "count": count,     # units with this barcode and date in the list, None = not saved
+        "saved": bool(scan or no_date),
     }
 
 
@@ -206,10 +225,11 @@ async def post_barcode(request: Request) -> JSONResponse:
         code = str(body["barcode"])
         scan_id = body.get("scan_id")
         scan_id = int(scan_id) if scan_id is not None else None
+        no_date = bool(body.get("no_date")) and scan_id is None
     except Exception:
         return JSONResponse({"error": "expected JSON {barcode, scan_id}"}, status_code=400)
     try:
-        result = await run_in_threadpool(_process_barcode, code, scan_id)
+        result = await run_in_threadpool(_process_barcode, code, scan_id, no_date)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except LookupError as e:

@@ -21,7 +21,7 @@ from ui.display import Display
 
 log = logging.getLogger("app")
 
-PENDING_TIMEOUT_S = 180     # a photo waits this long for its barcode, then it is dropped
+PENDING_TIMEOUT_S = 180     # a photo (also one without a date) waits this long for its barcode
 SPLASH_MIN_S = 1.5          # start screen: at least this long...
 SPLASH_MAX_S = 5.0          # ...and at most this long while the server is checked
 NO_BARCODE_SHOW_S = 2.5
@@ -55,6 +55,7 @@ class App:
         self.started = time.monotonic()
         self.result_until = 0.0
         self.pending = None          # photo waiting for its barcode: {scan_id, date, since}
+                                     # (no_date=True: the photo found no date)
         self.got_barcode = False
         self._photo_expected_s = 3.0  # upload + OCR time, learned, for the progress bar
         self._low_warned = False
@@ -179,7 +180,7 @@ class App:
             self.show_idle()
 
         if self.pending and now - self.pending["since"] > PENDING_TIMEOUT_S:
-            log.info("photo of scan %s got no barcode in time", self.pending["scan_id"])
+            log.info("photo (scan %s) got no barcode in time", self.pending["scan_id"])
             self.set_pending(None)
             if self.state == IDLE:
                 self.show_idle(wake=False)
@@ -237,7 +238,8 @@ class App:
         """wake=False for background changes: do not undim a sleeping screen."""
         self.state = IDLE
         if self.pending:
-            self.display.show("pending", wake=wake, date=self.pending["date"])
+            self.display.show("pending", wake=wake, date=self.pending["date"],
+                              no_date=self.pending.get("no_date", False))
         else:
             self.display.show("idle", wake=wake, online=client.is_online())
 
@@ -270,8 +272,10 @@ class App:
         res = client.send_image(path)
         self._photo_expected_s = 0.7 * self._photo_expected_s + 0.3 * (time.monotonic() - t0)
         if res.get("scan_id") is None:       # the server stores nothing without a date
-            return ("error", dict(title="Date not found", hint="Take the photo again",
-                                  icon="camera"), KEEP)
+            # Retake, or scan the barcode: then the product is saved without a date
+            pending = dict(scan_id=None, date=None, no_date=True, since=time.monotonic())
+            return ("error", dict(title="Date not found", hint="Retake or scan code",
+                                  icon="camera"), pending)
         date = res.get("expiry_display") or "?"
         pending = dict(scan_id=res["scan_id"], date=date, since=time.monotonic())
         screen = "expired" if res.get("expired") else "date"
@@ -280,10 +284,11 @@ class App:
     def job_barcode(self, code, pending):
         self.display.show("progress", title="Looking up", expected=1.5)
         scan_id = pending["scan_id"] if pending else None
-        res = client.send_barcode(code, scan_id)
+        no_date = bool(pending and pending.get("no_date"))
+        res = client.send_barcode(code, scan_id, no_date=no_date)
         date = res.get("expiry_display") or (pending or {}).get("date")
         return ("product", dict(name=res.get("product"), code=res.get("barcode") or code,
-                                saved=scan_id is not None, date=date,
+                                saved=res.get("saved", scan_id is not None), date=date,
                                 count=res.get("count")), CLEAR)
 
 

@@ -3,8 +3,11 @@
 
 - Every day at REMIND_TIME: products that expire within REMIND_DAYS days.
   Each product is mentioned in one reminder only (REMIND_ONCE).
-- After midnight: expired products are deleted together with their photos.
+- After midnight: expired products are deleted together with their photos, and products
+  saved without a name are looked up in Open Food Facts again.
 - /list, /soon, /del_<id>, /lang (ru/en), /stop, /start, /help
+- "✏️ Edit…" under /list: set the date or the name of a product (typed as a message),
+  delete it. Products without a date or a name are in the "❓ Needs info" group.
 
 Talks to the Telegram Bot API directly with requests (long polling: no open
 ports or public IP needed). Settings come from environment variables, see bot.env.example.
@@ -21,7 +24,8 @@ from typing import List, Optional
 
 import requests
 
-from core import dates, db
+from core import dates, db, products
+from ocr.parser import parse_expiry_date
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(name)s %(levelname)s: %(message)s")
@@ -56,6 +60,8 @@ API = f"https://api.telegram.org/bot{TOKEN}/"
 POLL_TIMEOUT = 25          # long polling: Telegram holds the request up to this long
 CONNECT_TIMEOUT = 5        # a dead network path must fail fast, not after 35 s
 SLOW_CALL_S = 2.0          # log API calls slower than this
+INPUT_TIMEOUT_S = 300      # a typed date / name is expected this long after the button
+NAME_MAX = 60              # longest product name that can be typed
 
 if FORCE_IPV4:
     import urllib3.util.connection
@@ -86,8 +92,24 @@ TEXTS = {
         "g_month": "До 30 дней",
         "g_quarter": "До 3 месяцев",
         "g_later": "Позже",
-        "btn_delete_menu": "🗑 Удалить…",
-        "btn_delete_this": "🗑 Удалить: {name}",
+        "g_todo": "Нужно дополнить",
+        "no_date": "нет даты",
+        "todo_reminder": "❓ Нужно дополнить: {n} — /list",
+        "btn_edit_menu": "✏️ Изменить…",
+        "btn_set_date": "📅 Дата",
+        "btn_set_name": "🏷 Название",
+        "ask_date": ("📅 Пришли дату для «{name}»{times}, например "
+                     "<code>12.03.27</code> или <code>03/2027</code>."),
+        "ask_name": "🏷 Пришли название для «{name}»{times} (до {max} символов).",
+        "bad_date": "Не понял дату. Пример: <code>12.03.27</code> или <code>03/2027</code>.",
+        "past_date": "Дата {date} уже прошла — проверь и пришли ещё раз.",
+        "long_name": "Слишком длинно: максимум {max} символов.",
+        "date_set": "✅ {name}: {date}",
+        "name_set": "✅ Название: {name}",
+        "same_undated": "Ещё {n} шт. этого продукта без даты — тоже {date}?",
+        "btn_all_same": "Да, тоже",
+        "btn_only_this": "Только этой",
+        "same_done": "✅ Ещё {n} шт.: {date}",
         "btn_delete_one": "🗑 Удалить 1 (останется {left})",
         "btn_delete_dupe": "🗑 Удалить повтор (останется 1)",
         "btn_delete_dupes": "🗑 Удалить повторы: {n} шт. (останется 1)",
@@ -130,8 +152,24 @@ TEXTS = {
         "g_month": "Within 30 days",
         "g_quarter": "Within 3 months",
         "g_later": "Later",
-        "btn_delete_menu": "🗑 Delete…",
-        "btn_delete_this": "🗑 Delete: {name}",
+        "g_todo": "Needs info",
+        "no_date": "no date",
+        "todo_reminder": "❓ Needs info: {n} — /list",
+        "btn_edit_menu": "✏️ Edit…",
+        "btn_set_date": "📅 Date",
+        "btn_set_name": "🏷 Name",
+        "ask_date": ("📅 Send the date for “{name}”{times}, e.g. "
+                     "<code>12.03.27</code> or <code>03/2027</code>."),
+        "ask_name": "🏷 Send the name for “{name}”{times} (up to {max} characters).",
+        "bad_date": "Could not read that date. Example: <code>12.03.27</code> or <code>03/2027</code>.",
+        "past_date": "{date} is already over — check it and send it again.",
+        "long_name": "Too long: {max} characters at most.",
+        "date_set": "✅ {name}: {date}",
+        "name_set": "✅ Name: {name}",
+        "same_undated": "{n} more of this product without a date — {date} too?",
+        "btn_all_same": "Yes, too",
+        "btn_only_this": "Only this one",
+        "same_done": "✅ {n} more: {date}",
         "btn_delete_one": "🗑 Delete 1 ({left} left)",
         "btn_delete_dupe": "🗑 Delete duplicate (1 left)",
         "btn_delete_dupes": "🗑 Delete {n} duplicates (1 left)",
@@ -222,14 +260,21 @@ def product_name(lang: str, p: dict, brand: bool = True) -> str:
 
 def product_date(p: dict) -> str:
     """As printed on the package: '18.01.2027', '12/2026', '27.07.'"""
-    return html.escape(dates.display(p["parsed_expiry_date"]) or p["expires_on"])
+    return html.escape(dates.display(p["parsed_expiry_date"]) or p["expires_on"] or "?")
+
+
+def incomplete(p: dict) -> bool:
+    """No date or no name: shown in the "❓ Needs info" group."""
+    return not p.get("expires_on") or not p.get("product_name")
 
 
 NBSP = "\u00a0"
 
 
 def short_date(p: dict) -> str:
-    """Compact date for the date column: '18.01.27', '12/26', '27.07.'"""
+    """Compact date for the date column: '18.01.27', '12/26', '27.07.', '??.??.??'"""
+    if not p.get("expires_on"):
+        return "??.??.??"
     text = dates.display(p["parsed_expiry_date"]) or p["expires_on"]
     if len(text) == 10 and text[2] == "." and text[5] == ".":     # 18.01.2027
         text = text[:6] + text[8:]
@@ -367,10 +412,12 @@ DELETE_PAGE = 8          # products per page in the delete menu
 
 def same_products(items: List[dict]) -> List[dict]:
     """Units of the same product with the same date become one entry with 'ids' and
-    'count'. Units without a barcode stay single. Keeps the order (by expiry date)."""
+    'count'. Units without a barcode or without a date stay single (their dates may
+    differ). Keeps the order (by expiry date)."""
     entries, by_key = [], {}
     for p in items:
-        key = (p["barcode"], p["expires_on"]) if p.get("barcode") else ("single", p["id"])
+        same = p.get("barcode") and p.get("expires_on")
+        key = (p["barcode"], p["expires_on"]) if same else ("single", p["id"])
         if key in by_key:
             by_key[key]["ids"].append(p["id"])
             by_key[key]["count"] += 1
@@ -398,7 +445,14 @@ def list_lines(lang: str, items: List[dict]) -> List[str]:
     the same product with the same date once with ×N."""
     today = date.today()
     lines = [t(lang, "list_title", n=len(items))]
-    rest = same_products(items)                 # already sorted by expiry date
+    entries = same_products(items)              # already sorted by expiry date
+    todo = [e for e in entries if incomplete(e)]
+    if todo:
+        lines += ["", f"❓ <b>{t(lang, 'g_todo')}</b> ({sum(e['count'] for e in todo)})"]
+        lines += [f"{date_cell(e)} {product_name(lang, e, brand=False)}{times(e)}"
+                  + (f" — <i>{t(lang, 'no_date')}</i>" if not e.get("expires_on") else "")
+                  for e in todo]
+    rest = [e for e in entries if not incomplete(e)]
     for limit, emoji, key in GROUPS:
         group = [e for e in rest if limit is None or days_left(e, today) <= limit]
         if not group:
@@ -412,15 +466,18 @@ def list_lines(lang: str, items: List[dict]) -> List[str]:
 
 
 def list_buttons(lang: str) -> list:
-    return [[{"text": t(lang, "btn_delete_menu"), "callback_data": "lm:del:0"}]]
+    return [[{"text": t(lang, "btn_edit_menu"), "callback_data": "lm:del:0"}]]
 
 
-def delete_buttons(lang: str, items: List[dict], page: int) -> list:
-    """One button per product and date (current page), page switcher, cancel."""
+def menu_buttons(lang: str, items: List[dict], page: int) -> list:
+    """One button per product and date (current page), page switcher, cancel.
+    Products that need info come first (same order as the list) and have a ❓."""
     entries = same_products(items)
+    entries = [e for e in entries if incomplete(e)] + [e for e in entries if not incomplete(e)]
     pages = max(1, -(-len(entries) // DELETE_PAGE))
     page = max(0, min(page, pages - 1))
-    rows = [[{"text": f"{short_date(e)} · {plain_name(lang, e, brand=False)}{times(e, False)}",
+    rows = [[{"text": ("❓ " if incomplete(e) else "")
+                      + f"{short_date(e)} · {plain_name(lang, e, brand=False)}{times(e, False)}",
               "callback_data": f"lm:ask:{e['id']}:{page}"}]
             for e in entries[page * DELETE_PAGE:(page + 1) * DELETE_PAGE]]
     if pages > 1:
@@ -431,15 +488,19 @@ def delete_buttons(lang: str, items: List[dict], page: int) -> list:
     return rows
 
 
-def confirm_buttons(lang: str, e: dict, page: int) -> list:
-    """One unit: "Delete: name". Two: "Delete duplicate". Three or more: "Delete 1"
-    (the last scanned) or "Delete duplicates" (all but the first scanned)."""
+def card_buttons(lang: str, e: dict, page: int) -> list:
+    """Product card: its name and date (not a button), Date / Name, then delete:
+    one unit "Delete"; two "Delete duplicate"; three or more "Delete 1" (the last
+    scanned) or "Delete duplicates" (all but the first scanned)."""
+    title = f"{plain_name(lang, e, brand=False)} · {short_date(e)}{times(e, False)}"
+    rows = [[{"text": title, "callback_data": "lm:noop"}],
+            [{"text": t(lang, "btn_set_date"), "callback_data": f"lm:date:{e['id']}:{page}"},
+             {"text": t(lang, "btn_set_name"), "callback_data": f"lm:name:{e['id']}:{page}"}]]
     back = [{"text": t(lang, "btn_back"), "callback_data": f"lm:del:{page}"}]
     if e["count"] == 1:
-        return [[{"text": t(lang, "btn_delete_this", name=plain_name(lang, e, brand=False)),
-                  "callback_data": f"lm:yes:{e['id']}:{page}"}], back]
+        return rows + [[{"text": t(lang, "btn_delete"),
+                         "callback_data": f"lm:yes:{e['id']}:{page}"}], back]
     dupes = e["count"] - 1
-    rows = []
     if dupes > 1:      # with two units "Delete 1" and "Delete duplicates" would be the same
         rows.append([{"text": t(lang, "btn_delete_one", left=dupes),
                       "callback_data": f"lm:yes:{max(e['ids'])}:{page}"}])
@@ -457,7 +518,7 @@ def cmd_list(chat_id: int, lang: str) -> None:
 
 
 def refresh_list(chat_id: int, message_id: int, lang: str) -> None:
-    """After a deletion: redraw the list in the same message (or send a new one if
+    """After a change: redraw the list in the same message (or send a new one if
     it no longer fits into one message)."""
     items = db.products_all()
     if not items:
@@ -500,6 +561,178 @@ def cmd_lang(chat_id: int) -> None:
                    {"text": "English", "callback_data": "lang:en"}]])
 
 
+# --- typed date / name (after the Date / Name button in the product card) ---------------
+# (chat_id, user_id) -> what is expected: kind 'date' or 'name', the units, where the list
+# and the question are. Kept in memory: after a bot restart the button is pressed again.
+_waiting = {}
+
+
+# Typed dates: 12.03.27, 12.3.2027, 12 03 27, 2027-03-12, 03/27, 03.2027, 12.03.
+_SEP = r"\s*[./\-\s]\s*"
+_TYPED_DMY = re.compile(rf"(\d{{1,2}}){_SEP}(\d{{1,2}}){_SEP}(\d{{4}}|\d{{2}})")
+_TYPED_ISO = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})")
+_TYPED_MY = re.compile(r"(\d{1,2})\s*/\s*(\d{4}|\d{2})|(\d{1,2})\s*[.\-\s]\s*(\d{4})")
+_TYPED_DM_RE = re.compile(rf"(\d{{1,2}}){_SEP}(\d{{1,2}})\.?")
+
+
+def typed_date(text: str) -> Optional[str]:
+    """A date typed by a person, in the parser's format: 'DD-MM-YYYY', '00-MM-YYYY'
+    (month and year) or 'DD-MM-0000' (no year). The usual ways to type a date are read
+    strictly here (the OCR parser guesses around OCR noise, and it turns a past year into
+    "no year"); anything else goes to the OCR parser."""
+    text = text.strip()
+
+    def year(y: str) -> int:
+        return int(y) + 2000 if len(y) == 2 else int(y)
+
+    def valid(y: int, m: int, d: int) -> bool:
+        try:
+            date(y, m, d)
+            return True
+        except ValueError:
+            return False
+
+    m = _TYPED_ISO.fullmatch(text)
+    if m:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        return f"{d:02d}-{mo:02d}-{y}" if valid(y, mo, d) else None
+    m = _TYPED_DMY.fullmatch(text)
+    if m:
+        d, mo, y = int(m.group(1)), int(m.group(2)), year(m.group(3))
+        return f"{d:02d}-{mo:02d}-{y}" if valid(y, mo, d) else None
+    m = _TYPED_MY.fullmatch(text)          # 03/27, 03/2027, 03.2027
+    if m:
+        mo, y = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+        return f"00-{int(mo):02d}-{year(y)}" if 1 <= int(mo) <= 12 else None
+    m = _TYPED_DM_RE.fullmatch(text)
+    if m:
+        d, mo = int(m.group(1)), int(m.group(2))
+        return f"{d:02d}-{mo:02d}-0000" if valid(2000, mo, d) else None
+    return parse_expiry_date(text)
+
+
+def start_input(kind: str, chat_id: int, user_id: int, lang: str, e: dict,
+                list_msg: int) -> None:
+    cancel_input(chat_id, user_id, lang)              # an older question is void now
+    name = product_name(lang, e, brand=False)
+    if kind == "date":
+        text = t(lang, "ask_date", name=name, times=times(e))
+    else:
+        text = t(lang, "ask_name", name=name, times=times(e), max=NAME_MAX)
+    msg = send(chat_id, text, buttons=[[{"text": t(lang, "btn_close"),
+                                         "callback_data": "in:cancel"}]])
+    _waiting[(chat_id, user_id)] = dict(
+        kind=kind, ids=list(e["ids"]), barcode=e.get("barcode"),
+        undated=not e.get("expires_on"), list_msg=list_msg,
+        prompt_msg=msg.get("message_id"), since=time.monotonic())
+
+
+def cancel_input(chat_id: int, user_id: int, lang: str) -> None:
+    """Forget the question (a command, Cancel or a new question) and say so under it."""
+    w = _waiting.pop((chat_id, user_id), None)
+    if w and w["prompt_msg"]:
+        try:
+            edit(chat_id, w["prompt_msg"], t(lang, "cancelled"))
+        except TelegramError as e:
+            log.info("could not close the question: %s", e)
+
+
+def waiting_for(chat_id: int, user_id: int) -> Optional[dict]:
+    """The open question of this person, None if there is none or it timed out."""
+    w = _waiting.get((chat_id, user_id))
+    if w and time.monotonic() - w["since"] > INPUT_TIMEOUT_S:
+        _waiting.pop((chat_id, user_id), None)
+        return None
+    return w
+
+
+def _close_prompt(chat_id: int, w: dict, text: str) -> None:
+    """Replace the question with the result and redraw the list it came from."""
+    for msg_id, action in ((w["prompt_msg"], "prompt"), (w["list_msg"], "list")):
+        if not msg_id:
+            continue
+        try:
+            if action == "prompt":
+                edit(chat_id, msg_id, text)
+            else:
+                refresh_list(chat_id, msg_id, w["lang"])
+        except TelegramError as e:
+            log.info("could not update the %s: %s", action, e)
+
+
+def handle_input(chat_id: int, user_id: int, lang: str, text: str, w: dict) -> None:
+    """A message while a date or a name is expected."""
+    w["lang"] = lang
+    if w["kind"] == "date":
+        today = date.today()
+        parsed = typed_date(text)
+        resolved = dates.resolve(parsed, today) if parsed else None
+        if resolved is None:
+            w["since"] = time.monotonic()             # try again, the time starts anew
+            send(chat_id, t(lang, "bad_date"))
+            return
+        shown = html.escape(dates.display(parsed) or resolved.isoformat())
+        if resolved < today:
+            w["since"] = time.monotonic()
+            send(chat_id, t(lang, "past_date", date=shown))
+            return
+        _waiting.pop((chat_id, user_id), None)
+        if not db.set_date(w["ids"], parsed, resolved.isoformat()):
+            _close_prompt(chat_id, w, t(lang, "not_found"))
+            return
+        log.info("date %s set for scans %s by user %s", resolved, w["ids"], user_id)
+        item = next((x for x in db.products_all() if x["id"] == w["ids"][0]), {})
+        _close_prompt(chat_id, w, t(lang, "date_set", date=shown,
+                                    name=product_name(lang, item, brand=False)))
+        others = db.undated_ids(w["barcode"], w["ids"]) if w["undated"] else []
+        if others:
+            send(chat_id, t(lang, "same_undated", n=len(others), date=shown),
+                 buttons=[[{"text": t(lang, "btn_all_same"),
+                            "callback_data": f"in:same:{w['ids'][0]}:{w['list_msg'] or 0}"},
+                           {"text": t(lang, "btn_only_this"), "callback_data": "in:no"}]])
+        return
+
+    name = " ".join(text.split())
+    if len(name) > NAME_MAX:
+        w["since"] = time.monotonic()
+        send(chat_id, t(lang, "long_name", max=NAME_MAX))
+        return
+    _waiting.pop((chat_id, user_id), None)
+    if not db.set_name(w["ids"], w["barcode"], name):
+        _close_prompt(chat_id, w, t(lang, "not_found"))
+        return
+    log.info("name set for scans %s (barcode %s) by user %s", w["ids"], w["barcode"], user_id)
+    _close_prompt(chat_id, w, t(lang, "name_set", name=html.escape(name)))
+
+
+def handle_input_button(data: str, chat_id: int, message_id: int, lang: str,
+                        user: dict) -> None:
+    """Buttons under the questions: Cancel, and "the same date for the other units"."""
+    user_id = user.get("id")
+    if data == "in:cancel":
+        w = _waiting.get((chat_id, user_id))
+        if w and w["prompt_msg"] == message_id:
+            _waiting.pop((chat_id, user_id), None)
+        edit(chat_id, message_id, t(lang, "cancelled"))
+    elif data == "in:no":
+        edit_buttons(chat_id, message_id, None)
+    elif data.startswith("in:same:"):
+        _, _, scan_id, list_msg = data.split(":")
+        src = next((x for x in db.products_all() if x["id"] == int(scan_id)), None)
+        ids = db.undated_ids(src["barcode"], []) if src and src.get("expires_on") else []
+        n = db.set_date(ids, src["parsed_expiry_date"], src["expires_on"]) if ids else 0
+        if not n:
+            edit(chat_id, message_id, t(lang, "not_found"))
+            return
+        log.info("date %s set for scans %s by user %s", src["expires_on"], ids, user_id)
+        edit(chat_id, message_id, t(lang, "same_done", n=n, date=product_date(src)))
+        if int(list_msg):
+            try:
+                refresh_list(chat_id, int(list_msg), lang)
+            except TelegramError as e:
+                log.info("could not update the list: %s", e)
+
+
 def reminder_line(lang: str, e: dict, today: date) -> str:
     return (f"{date_cell(e)} {product_name(lang, e, brand=False)}{times(e)}"
             f" — <i>{when(lang, days_left(e, today))}</i>")
@@ -514,7 +747,12 @@ def handle_message(msg: dict) -> None:
     private = chat.get("type") == "private"
 
     if not text.startswith("/"):
-        if private and allowed(chat_id):
+        if not allowed(chat_id):
+            return
+        w = waiting_for(chat_id, user.get("id")) if text else None
+        if w:
+            handle_input(chat_id, user.get("id"), chat_lang(chat_id, user), text, w)
+        elif private:
             cmd_help(chat_id, chat_lang(chat_id, user))
         return
 
@@ -531,6 +769,7 @@ def handle_message(msg: dict) -> None:
         return
 
     lang = chat_lang(chat_id, user)
+    cancel_input(chat_id, user.get("id"), lang)        # a command ends an open question
     m = re.fullmatch(r"del_?(\d+)", command)
     if command == "start":
         db.save_chat(chat_id, lang=lang, subscribed=True)
@@ -580,6 +819,10 @@ def handle_callback(q: dict) -> None:
         return
     _answer(q)
 
+    if data.startswith("in:"):
+        handle_input_button(data, chat_id, message_id, lang, user)
+        return
+
     if data.startswith("del:"):
         p = db.delete_product(int(data[4:]))
         if p:
@@ -599,12 +842,13 @@ def handle_callback(q: dict) -> None:
 
 def handle_list_button(data: str, chat_id: int, message_id: int, lang: str,
                        user: dict) -> Optional[str]:
-    """Buttons under /list: delete menu -> confirm -> delete. Returns a toast text."""
+    """Buttons under /list: edit menu -> product card -> date / name / delete.
+    Returns a toast text."""
     parts = data.split(":")
     action = parts[1]
     items = db.products_all()
-    if action == "del":                                    # show / page the delete menu
-        edit_buttons(chat_id, message_id, delete_buttons(lang, items, int(parts[2])))
+    if action == "del":                                    # show / page the edit menu
+        edit_buttons(chat_id, message_id, menu_buttons(lang, items, int(parts[2])))
     elif action == "back":
         edit_buttons(chat_id, message_id, list_buttons(lang) if items else None)
     elif action == "ask":
@@ -613,7 +857,13 @@ def handle_list_button(data: str, chat_id: int, message_id: int, lang: str,
         if e is None:
             refresh_list(chat_id, message_id, lang)
             return t(lang, "not_found")
-        edit_buttons(chat_id, message_id, confirm_buttons(lang, e, page))
+        edit_buttons(chat_id, message_id, card_buttons(lang, e, page))
+    elif action in ("date", "name"):                       # ask for it, the answer is a message
+        e = entry_of(items, int(parts[2]))
+        if e is None:
+            refresh_list(chat_id, message_id, lang)
+            return t(lang, "not_found")
+        start_input(action, chat_id, user.get("id"), lang, e, message_id)
     elif action == "yes":                                  # one unit
         p = db.delete_product(int(parts[2]))
         refresh_list(chat_id, message_id, lang)
@@ -658,9 +908,12 @@ def send_reminders(today: date) -> bool:
 
     sent = 0
     entries = same_products(items)
+    todo = sum(1 for p in db.products_all() if incomplete(p))
     for c in chats:
         lang = c["lang"] if c["lang"] in TEXTS else "ru"
         lines = [t(lang, "reminder"), ""] + [reminder_line(lang, e, today) for e in entries]
+        if todo:                       # only inside a reminder that is sent anyway
+            lines += ["", t(lang, "todo_reminder", n=todo)]
         try:
             send_long(c["chat_id"], lines)
             sent += 1
@@ -679,6 +932,12 @@ def daily_jobs(now: datetime) -> None:
         n = db.cleanup(today)
         db.set_state("last_cleanup", today)
         log.info("cleanup: %d expired products deleted", n)
+        try:
+            named = products.refresh_unnamed()
+            if named:
+                log.info("names found later for %d products", named)
+        except Exception:
+            log.exception("looking up unnamed products failed")
     if (now.hour, now.minute) >= (REMIND_H, REMIND_M) and db.get_state("last_reminder") != today:
         if send_reminders(now.date()):
             db.set_state("last_reminder", today)

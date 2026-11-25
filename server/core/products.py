@@ -1,4 +1,5 @@
-"""Product lookup by barcode: local cache first, then Open Food Facts."""
+"""Product lookup by barcode: local cache first, then Open Food Facts.
+A name set by the user in the bot (custom_name) always wins."""
 import logging
 import os
 from typing import Optional
@@ -51,6 +52,9 @@ def lookup(code: str) -> Optional[dict]:
         return None
 
     cached = db.get_product(norm)
+    if cached and cached.get("custom_name"):          # named in the bot: no need to ask OFF
+        return dict(_as_result(cached), name=cached["custom_name"],
+                    brand=cached["brand"] if cached["found"] else None)
     if cached and (cached["found"] or cached["age_days"] < RETRY_NOT_FOUND_DAYS):
         return _as_result(cached) if cached["found"] else None
 
@@ -80,6 +84,21 @@ def lookup(code: str) -> Optional[dict]:
                     image_url=product.get("image_front_small_url") or None)
     log.info("product %s: %s / %s", norm, name, brand)
     return _as_result(db.get_product(norm))
+
+
+def refresh_unnamed() -> int:
+    """Ask again for products that were saved without a name (nightly, from the bot).
+    Codes Open Food Facts said it does not know are re-checked once a week (cache rule
+    above); codes that failed because of a network error are tried every night.
+    Returns the number of products that got a name."""
+    named = 0
+    for code in db.unnamed_barcodes():
+        product = lookup(code)
+        if product and product.get("name"):
+            n = db.fill_name(code, product["name"], product.get("brand"))
+            log.info("product %s found later: %s (%d units)", code, product["name"], n)
+            named += n
+    return named
 
 
 def _as_result(row: dict) -> dict:
