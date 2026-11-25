@@ -641,12 +641,6 @@ tripped; afterwards the battery showed about 7 V and works normally.
 - [ ] Discharge test: refine `SOC_TABLE`, measure the runtime
 - [ ] Check the camera in low light (if needed `--timeout 1500`)
 - [ ] `python -m tools.gm67_setup --lock --wake`
-- [ ] Solder the buttons' ground instead of the WAGO clamp
 
 **Bot ideas**
-- [ ] `/photo_<id>` — send the product's photo
-- [ ] `/edit_<id>` — fix the date by text
 - [ ] `/add Milch 20.11` — add a product by hand
-- [ ] `/find milch`, `/list` with pages
-- [ ] Medicines: enable DataMatrix and Code 39 on the GM67, read the expiry date from the DataMatrix
-      (securPharm), names from an own table (the bot asks for the name the first time a code is scanned)
