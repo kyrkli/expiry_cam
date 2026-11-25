@@ -43,6 +43,28 @@ MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(name)s %(levelname)s: %(message)s")
+
+
+def _setup_logging() -> None:
+    """Our loggers get their own handler: importing PaddleOCR reconfigures the root
+    logger, which used to swallow every INFO line (scan results, product lookups)."""
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s"))
+    for name in ("server", "products", "db"):
+        logger = logging.getLogger(name)
+        logger.setLevel(logging.INFO)
+        logger.handlers = [handler]
+        logger.propagate = False
+
+    class _NoHealthChecks(logging.Filter):
+        """The scanner calls /health every 10 s; keep those out of the journal."""
+        def filter(self, record):
+            return "/health" not in record.getMessage()
+
+    logging.getLogger("uvicorn.access").addFilter(_NoHealthChecks())
+
+
+_setup_logging()
 log = logging.getLogger("server")
 
 # PaddleOCR is not thread-safe and keeps per-thread MKL-DNN caches, so it lives in
