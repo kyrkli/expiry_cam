@@ -21,6 +21,7 @@ from ui.display import Display
 
 log = logging.getLogger("app")
 
+CAPTURE_KEEP_DAYS = 14      # photos left in captures/ after a failed upload are deleted then
 PENDING_TIMEOUT_S = 180     # a photo (also one without a date) waits this long for its barcode
 SPLASH_MIN_S = 1.5          # start screen: at least this long...
 SPLASH_MAX_S = 5.0          # ...and at most this long while the server is checked
@@ -302,9 +303,28 @@ def error_screen(e):
     return "error", dict(title="Error", hint=str(e)[:40] or type(e).__name__)
 
 
+def clean_captures():
+    """Photos stay in captures/ only when the upload failed; delete them after
+    CAPTURE_KEEP_DAYS (unless KEEP_LOCAL_PHOTOS asks to keep every photo)."""
+    if getattr(config, "KEEP_LOCAL_PHOTOS", False) or not config.CAPTURE_DIR.is_dir():
+        return
+    limit = time.time() - CAPTURE_KEEP_DAYS * 86400
+    deleted = 0
+    for photo in config.CAPTURE_DIR.glob("*.jpg"):
+        try:
+            if photo.stat().st_mtime < limit:
+                photo.unlink()
+                deleted += 1
+        except OSError as e:
+            log.warning("could not delete %s: %s", photo, e)
+    if deleted:
+        log.info("deleted %d old photos from captures/", deleted)
+
+
 def main():
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(name)s %(levelname)s: %(message)s")
+    clean_captures()
     App().run()
 
 

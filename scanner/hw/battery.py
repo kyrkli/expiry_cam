@@ -1,5 +1,6 @@
 """Battery monitor thread: ADS1115 A0 -> pack voltage -> state of charge."""
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -18,6 +19,12 @@ SOC_TABLE = [
     (8.30, 100), (8.10, 90), (7.95, 80), (7.85, 70), (7.75, 60),
     (7.65, 50), (7.55, 40), (7.45, 30), (7.30, 20), (7.10, 10), (6.60, 0),
 ]
+
+
+# Discharge test (BATTERY_LOG = True in config.py): the smoothed voltage is appended to this
+# file once a minute; tools/discharge_report.py turns it into a runtime and a SOC_TABLE
+LOG_FILE = config.BASE_DIR / "battery_log.csv"
+LOG_EVERY_S = 60
 
 
 def soc_percent(v: float) -> int:
@@ -48,6 +55,7 @@ class BatteryMonitor(threading.Thread):
         self._samples = deque(maxlen=max(3, window))   # median over BATTERY_WINDOW_S
         self._low_since = None
         self._empty_fired = False
+        self._last_log = 0.0
         self.voltage = None                # latest smoothed voltage
 
     def _read_voltage(self) -> float:
@@ -73,9 +81,30 @@ class BatteryMonitor(threading.Thread):
                 v_avg = median(self._samples)
                 self.voltage = v_avg
                 self._on_update(v_avg, soc_percent(v_avg), v_avg < config.BATTERY_WARN_V)
+                self._log_for_test(v_avg)
                 self._check_empty(v_avg)
 
             time.sleep(config.BATTERY_READ_INTERVAL_S)
+
+    def _log_for_test(self, v_avg: float):
+        """One CSV line per minute when BATTERY_LOG is on (discharge test)."""
+        if not getattr(config, "BATTERY_LOG", False):
+            return
+        now = time.time()
+        if now - self._last_log < LOG_EVERY_S:
+            return
+        self._last_log = now
+        try:
+            new = not LOG_FILE.exists() or LOG_FILE.stat().st_size == 0
+            with open(LOG_FILE, "a") as f:
+                if new:
+                    f.write("time,unix,voltage,percent\n")
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')},{now:.0f},{v_avg:.3f},"
+                        f"{soc_percent(v_avg)}\n")
+                f.flush()
+                os.fsync(f.fileno())       # the last lines must survive the power-off
+        except OSError as e:
+            log.warning("battery log: %s", e)
 
     def _check_empty(self, v_avg: float):
         # Act only on a full window of valid readings

@@ -6,7 +6,9 @@ venv/
 
 # Data that lives only on the devices
 scanner/captures/
+scanner/battery_log.csv
 server/uploads/
+server/backups/
 ocr_research/dataset/
 ocr_research/unsuccessful_parse/
 latest.jpg

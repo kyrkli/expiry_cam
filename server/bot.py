@@ -3,8 +3,9 @@
 
 - Every day at REMIND_TIME: products that expire within REMIND_DAYS days.
   Each product is mentioned in one reminder only (REMIND_ONCE).
-- After midnight: expired products are deleted together with their photos, and products
-  saved without a name are looked up in Open Food Facts again.
+- After midnight: a backup of the database (backups/, one week), expired products are
+  deleted together with their photos, photos without a product older than 30 days are
+  deleted, and products saved without a name are looked up in Open Food Facts again.
 - /list, /soon, /del_<id>, /lang (ru/en), /stop, /start, /help
 - "✏️ Edit…" under /list: set the date or the name of a product (typed as a message),
   delete it. Products without a date or a name are in the "❓ Needs info" group.
@@ -24,7 +25,7 @@ from typing import List, Optional
 
 import requests
 
-from core import dates, db, products
+from core import dates, db, products, upkeep
 from ocr.parser import parse_expiry_date
 
 logging.basicConfig(level=logging.INFO,
@@ -929,9 +930,21 @@ def daily_jobs(now: datetime) -> None:
     """Called often from the main loop; every job runs once per day."""
     today = now.date().isoformat()
     if db.get_state("last_cleanup") != today:
+        try:                           # first, so yesterday's state is safe whatever follows
+            path = upkeep.backup_db(today)
+            log.info("backup: %s (%d KB)", path.name, path.stat().st_size // 1024)
+        except Exception:
+            log.exception("database backup failed")
         n = db.cleanup(today)
         db.set_state("last_cleanup", today)
         log.info("cleanup: %d expired products deleted", n)
+        try:
+            removed = upkeep.clean_photos()
+            if removed:
+                log.info("photos: %d without a product, older than %d days, deleted",
+                         removed, upkeep.PHOTO_KEEP_DAYS)
+        except Exception:
+            log.exception("photo cleanup failed")
         try:
             named = products.refresh_unnamed()
             if named:

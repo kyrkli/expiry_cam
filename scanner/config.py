@@ -30,6 +30,7 @@ BATTERY_READ_INTERVAL_S = 5  # how often to read the ADS
 BATTERY_WINDOW_S = 30        # median over this time window
 BATTERY_ENABLED = True       # read the battery and shut down when empty (keep on!)
 BATTERY_SHOW = True          # always show the battery level (False = only when low)
+BATTERY_LOG = True          # discharge test: voltage -> battery_log.csv once a minute
 
 # --- Barcode scanner (GM67 on UART) -------------------------------------------
 SCANNER_PORT = "/dev/serial0"

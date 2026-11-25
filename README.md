@@ -35,12 +35,12 @@ expiry_cam/
     hw/                hardware: battery, camera, gm67 (protocol), barcode (reading codes)
     ui/                screen: display (OLED thread), screens (drawing)
     net/               client (talking to the server)
-    tools/             gm67_setup, calibrate, oled_test, i2c_test.sh
+    tools/             gm67_setup, calibrate, discharge_report, oled_test, i2c_test.sh
     system/            systemd service, shutdown hook, install.sh
   server/              → ~/expiry_cam on the Pi 5
     server.py          HTTP API (uvicorn server:app)
     bot.py             Telegram bot
-    core/              db, dates, products (Open Food Facts)
+    core/              db, dates, products (Open Food Facts), upkeep (backup, old photos)
     ocr/               engine (PaddleOCR pipeline), parser (date in text)
     system/            systemd services, install.sh
     bot.env.example, requirements.txt
@@ -266,6 +266,7 @@ VS Code Remote-SSH does not work on the Pi 3A+: the VS Code server needs more th
 | `tools/calibrate.py` | battery measurement calibration with a multimeter |
 | `tools/oled_test.py` | display check (frame and text) |
 | `tools/i2c_test.sh` | 300 transfers to one I²C device, counts errors |
+| `tools/discharge_report.py` | discharge test log → runtime and a new `SOC_TABLE` (section 6) |
 | `system/` | service, shutdown hook, `install.sh` |
 
 Tools run from `~/expiry_cam` as modules: `venv/bin/python -m tools.<name>`.
@@ -306,7 +307,8 @@ rpicam-still --nopreview --timeout 1000 --autofocus-on-capture --autofocus-range
 - `GET /health` every 10 s; "offline" after two failures in a row (confirmed after 2 s), or right
   away when a real request fails. When the server is back, the icon changes within 5 s.
 - After a successful upload the photo is deleted from the scanner (`KEEP_LOCAL_PHOTOS = True` keeps
-  it); after an error it stays in `captures/`.
+  it); after an error it stays in `captures/` and is deleted after 14 days (at the app start,
+  `CAPTURE_KEEP_DAYS` in `app.py`).
 
 ### Screen (`ui/display.py` + `ui/screens.py`)
 
@@ -330,6 +332,7 @@ rpicam-still --nopreview --timeout 1000 --autofocus-on-capture --autofocus-range
 | `K_CAL` | **1.0055 on this device** | calibration (section 6) |
 | `BATTERY_WARN_V` / `BATTERY_CUTOFF_V` | 7.0 / 6.6 V | warning / shutdown (if below for 30 s) |
 | `BATTERY_SHOW` | `True` | always show the battery level (`False` = only when low) |
+| `BATTERY_LOG` | `False` | discharge test: write the voltage to `battery_log.csv` once a minute (section 6) |
 | `SCANNER_PORT`, `SCANNER_BAUD` | `/dev/serial0`, 9600 | GM67 |
 | `SCANNER_WAKE_BYTE` | **`True` on this device** | wake the GM67 with a `0x00` byte before a command |
 | `RESULT_SHOW_S` | 5 | how long a result stays on the screen |
@@ -392,7 +395,37 @@ may be in USB mode) and **"9600bps"** from the manual.
   takes the median over 30 s and converts it to percent with `SOC_TABLE`.
 - Below 7.0 V: a full-screen "LOW BATTERY" once, then "LOW" in the status bar.
 - Below 6.6 V for 30 s in a row: automatic shutdown.
-- `SOC_TABLE` is **approximate**; refine it with a discharge test (section 11).
+- `SOC_TABLE` is **approximate**; refine it with a discharge test (below).
+
+### Discharge test
+
+Measures the runtime and gives a `SOC_TABLE` for this battery. It also checks that the
+automatic shutdown at 6.6 V really works.
+
+1. `BATTERY_LOG = True` in `scanner/config.py`, `./deploy.sh scanner`. From now on
+   `hw/battery.py` appends one line per minute to `~/expiry_cam/battery_log.csv` on the
+   scanner (time, smoothed voltage, current percent) whenever the app runs. Nothing else changes.
+2. Charge the battery fully (`CHARGE` until the charger shows full), then switch to `RUN`.
+3. Leave the scanner alone in `RUN` until it shuts down by itself ("Battery empty"). Do not
+   charge it and do not switch it off in between. An idle scanner is the right load: that is
+   what it does most of the time. A few scans in between do not matter.
+4. Switch to `CHARGE`, power the Pi on again later and fetch the log:
+   ```bash
+   scp scanner:expiry_cam/battery_log.csv .
+   python3 scanner/tools/discharge_report.py battery_log.csv
+   ```
+5. `BATTERY_LOG = False` in `config.py` and deploy, then delete the log on the scanner:
+   `ssh scanner 'rm ~/expiry_cam/battery_log.csv'`.
+6. The report prints the runtime, how long before the shutdown the 7.0 V warning came, a value
+   for `BATTERY_WARN_V` (warning at about 10 % left) and a ready `SOC_TABLE`. Put them into
+   `hw/battery.py` / `config.py` and deploy.
+
+The log may also hold lines from before the charge or from switching the scanner on again to
+fetch it: the report splits it at pauses of more than 5 minutes and uses the longest run. It
+warns if that run does not start with a full battery (below 8.2 V) or does not end at the
+cut-off (the test was stopped too early). It assumes a steady load: the used charge grows
+linearly with time, so 100 % is the first line of the run and 0 % its last one (our safe
+cut-off, not empty cells).
 
 ### Calibration (`tools/calibrate.py`)
 
@@ -415,6 +448,7 @@ may be in USB mode) and **"9600bps"** from the manual.
 | `core/db.py` | SQLite: scans, product cache, bot chats; migrates old tables by itself |
 | `core/dates.py` | parser strings → real dates, display format |
 | `core/products.py` | barcode → product name: cache first, then Open Food Facts |
+| `core/upkeep.py` | nightly database backup and removal of old photos (called by the bot) |
 | `ocr/engine.py` | OCR pipeline (PaddleOCR, 2.x API, language german) |
 | `ocr/parser.py` | finds the date in the OCR text |
 | `system/` | `expiry-server.service`, `expiry-bot.service`, `install.sh` |
@@ -485,7 +519,12 @@ curl "http://localhost:8000/scans?limit=5"
 - The path can be changed with the `EXPIRYCAM_DB` variable.
 - Photos: `uploads/YYYY-MM-DD/`, deleted together with their product; failed ones (no date) in
   `uploads/failed/`; photos of drafts that never got a barcode (usually a wrongly read date that
-  was taken again) in `uploads/rejected/`.
+  was taken again) in `uploads/rejected/`. Photos in `failed/` and `rejected/` are deleted after
+  30 days (`PHOTO_KEEP_DAYS` in `core/upkeep.py`), empty day folders too.
+- **Backup** every night: `backups/expirycam-YYYY-MM-DD.db`, the last 7 days are kept
+  (`BACKUP_KEEP`). Made with SQLite's backup API, so it is consistent even while the server
+  writes, and checked with `PRAGMA integrity_check`. Each backup is one self-contained file.
+  They are on the same SD card: copy them to the PC from time to time (section 9).
 
 ### Installation
 
@@ -514,10 +553,11 @@ the home folder. The Pi 5 time zone must be Europe/Berlin (`timedatectl`).
   If there is nothing to remind about, the bot stays silent. If the Pi 5 was off at 9:00, the
   reminder is sent when it starts. When a reminder is sent anyway and some products need info,
   it ends with one line "❓ Needs info: N — /list" (no separate messages).
-- **Cleanup** after midnight: expired products are deleted together with their photos;
-  drafts older than 1 hour (photo without barcode) are dropped, their photos go to `uploads/rejected/`.
-  Products without a date are never deleted automatically. Then products without a name are
-  looked up in Open Food Facts again.
+- **Upkeep** after midnight: first a backup of the database (`backups/`, one week). Then expired
+  products are deleted together with their photos; drafts older than 1 hour (photo without
+  barcode) are dropped, their photos go to `uploads/rejected/`. Products without a date are never
+  deleted automatically. Photos in `uploads/failed/` and `uploads/rejected/` older than 30 days
+  are deleted. Finally products without a name are looked up in Open Food Facts again.
 - `/list` — everything scanned, in groups: ❓ needs info (no date or no name, always on top),
   🔴 within 3 days, 🟠 within 30 days, 🟡 within 3 months, 🟢 later. The date on the left
   (monospace, in a straight column, `??.??.??` = no date), the name without the brand on the
@@ -613,8 +653,8 @@ ssh scanner journalctl -u expiry-cam -f     # logs right from the PC
 ssh pi5 journalctl -u expiry-bot -f
 ```
 
-`deploy.sh` never touches venvs, `captures/`, the database, `uploads/`, `bot.env`, the dataset
-or loose `*.jpg`/`*.png` files on the Pi 5.
+`deploy.sh` never touches venvs, `captures/`, `battery_log.csv`, the database, `backups/`,
+`uploads/`, `bot.env`, the dataset or loose `*.jpg`/`*.png` files on the Pi 5.
 Everything else on the device mirrors the repo: a file removed from the repo is removed there too.
 
 ### On the devices
@@ -642,6 +682,22 @@ timedatectl                               # Pi 5: time zone Europe/Berlin
 
 `scanner/config.py` in the repo holds the values of this particular scanner
 (`K_CAL = 1.0055`, `SCANNER_WAKE_BYTE = True`, `SERVER_URL`), so the deploy can safely overwrite it.
+
+### Backups
+
+```bash
+# Copy the nightly backups to the PC (an SD card can die, then the copies on it die too)
+rsync -a pi5:expiry_cam/backups/ ~/expiry_cam_backups/
+ssh pi5 'journalctl -u expiry-bot --since today | grep -E "backup|upkeep"'   # last night OK?
+
+# Restore one (on the Pi 5): stop both services, put the copy back, start again
+sudo systemctl stop expiry-server expiry-bot
+cd ~/expiry_cam
+cp expirycam.db expirycam.db.broken               # keep the old one, just in case
+rm -f expirycam.db-wal expirycam.db-shm
+cp backups/expirycam-2026-11-26.db expirycam.db
+sudo systemctl start expiry-server expiry-bot
+```
 
 ---
 
@@ -675,14 +731,8 @@ tripped; afterwards the battery showed about 7 V and works normally.
 ---
 
 ## 11. Open tasks
-
-**Structure and reliability**
-- [ ] Daily backup of `expirycam.db` (`sqlite3 expirycam.db ".backup …"`)
-- [ ] Clean up `uploads/failed/` older than 30 days
-
 **Hardware**
-- [ ] Discharge test: refine `SOC_TABLE`, measure the runtime
-
+- [ ] Discharge test: refine `SOC_TABLE`, measure the runtime (tools ready, section 6)
 
 # 12. Ideas for the future
 - [ ] Add axelerometer to the scanner: wake up the Pi when it is picked up during sleep mode.

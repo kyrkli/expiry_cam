@@ -22,13 +22,13 @@ case "$part" in
     host="${SCANNER_HOST:-scanner}"
     dest="expiry_cam/"
     services=(expiry-cam)
-    excludes=(venv/ captures/ ".lgd-nfy*")          # .lgd-nfy* = gpio pipes of the running app
+    excludes=(venv/ captures/ battery_log.csv ".lgd-nfy*")   # .lgd-nfy* = gpio pipes of the running app
     ;;
   server)
     host="${SERVER_HOST:-pi5}"
     dest="expiry_cam/"
     services=(expiry-server expiry-bot)
-    excludes=(.venv/ venv/ uploads/ ocr_research/ dataset/ unsuccessful_parse/ dont_track/ debug_output/
+    excludes=(.venv/ venv/ uploads/ backups/ ocr_research/ dataset/ unsuccessful_parse/ dont_track/ debug_output/
               bot.env "*.db" "*.db-wal" "*.db-shm" "*.jpg" "*.png")
     ;;
   research)
