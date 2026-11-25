@@ -630,7 +630,7 @@ tripped; afterwards the battery showed about 7 V and works normally.
 - [x] Server split into folders (`core/`, `ocr/`, `system/`), OCR experiments in `ocr_research/`
 - [x] Deploy script `deploy.sh`
 - [x] OCR benchmark writes into its own `bench.db`
-- [ ] Move both devices to the new layout (first deploy, `system/install.sh`, remove the old
+- [x] Move both devices to the new layout (first deploy, `system/install.sh`, remove the old
       `~/expiry_cam/.git` on the Pi 5)
 - [ ] Add the KiCad files to `hardware/`
 - [ ] Daily backup of `expirycam.db` (`sqlite3 expirycam.db ".backup …"`)

@@ -26,3 +26,7 @@ bot.env
 # Editors
 .vscode/
 .idea/
+
+docs/*.drawio*
+hardware/kicad_schematic/*.kicad_prl
+hardware/kicad_schematic/.history
