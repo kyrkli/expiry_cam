@@ -1,11 +1,28 @@
-# Python virtual environment
-.venv/
+# Python
 __pycache__/
-.github/
+*.pyc
+venv/
+.venv/
 
-# Database files
+# Data that lives only on the devices
+scanner/captures/
+server/uploads/
+server/dataset/
+server/unsuccessful_parse/
 *.db
-*.sqlite3
+*.db-wal
+*.db-shm
+
+# Secrets
+bot.env
+.env
+
+# Editors
+.vscode/
+.idea/
+
+
+.github/
 
 # Temporary image files
 *.jpg

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Run by systemd right before power off; $1 = poweroff | halt | reboot | kexec
+/home/rasient/expiry_cam/venv/bin/python /home/rasient/expiry_cam/oled_safe.py "$1"

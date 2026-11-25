@@ -1,0 +1,12 @@
+[Unit]
+Description=Expiry cam hand scanner
+After=multi-user.target
+
+[Service]
+WorkingDirectory=/home/rasient/expiry_cam
+ExecStart=/home/rasient/expiry_cam/venv/bin/python -u /home/rasient/expiry_cam/app.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
