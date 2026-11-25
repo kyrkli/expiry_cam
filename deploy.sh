@@ -28,14 +28,14 @@ case "$part" in
     host="${SERVER_HOST:-pi5}"
     dest="expiry_cam/"
     services=(expiry-server expiry-bot)
-    excludes=(.venv/ venv/ uploads/ ocr_research/ dataset/ unsuccessful_parse/ dont_track/
+    excludes=(.venv/ venv/ uploads/ ocr_research/ dataset/ unsuccessful_parse/ dont_track/ debug_output/
               bot.env "*.db" "*.db-wal" "*.db-shm" "*.jpg" "*.png")
     ;;
   research)
     host="${SERVER_HOST:-pi5}"
     dest="expiry_cam/ocr_research/"
     services=()
-    excludes=(dataset/ unsuccessful_parse/ "*.db" "*.db-wal" "*.db-shm" "*.jpg" "*.png")
+    excludes=(dataset/ unsuccessful_parse/ debug_output/ "*.db" "*.db-wal" "*.db-shm" "*.jpg" "*.png")
     ;;
   *)
     echo "usage: $0 scanner|server|research [--dry-run]" >&2

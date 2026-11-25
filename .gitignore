@@ -16,6 +16,7 @@ temp_frame.jpg
 *.db-shm
 *.sqlite3
 dont_track/
+ocr_research/debug_output/
 
 # Secrets
 bot.env
