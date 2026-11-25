@@ -96,6 +96,9 @@ status bar), then it is dropped. If no date is found, nothing is stored — take
 - "HOLD STILL" on a white background — the photo is being taken, hold steady; as soon as it changes
   you can move;
 - "EXPIRED" on a white background — the date on the photo is already over;
+- "Already in list · now ×2" (white bar under the product) — the same product with the same
+  date was scanned before. It is stored anyway (it may be a second unit); a re-scan by mistake
+  is removed in the bot ("Delete 1");
 - after 1 minute without a button press the screen dims, after 5 minutes it turns off (OLED burn-in
   protection); any press wakes it up and performs its action right away.
 
@@ -416,7 +419,8 @@ POST /image   (file=JPEG)  {"scan_id", "expiry", "expiry_display", "expires_on",
                            no date found → scan_id = null, nothing is stored in the database,
                            the photo is kept in uploads/failed/ (for OCR tuning)
 POST /barcode (JSON)       {"barcode": "4000417025005", "scan_id": 12 | null}
-                           → {"barcode", "product", "brand", "quantity", "scan_id", "expiry_display"}
+                           → {"barcode", "product", "brand", "quantity", "scan_id", "expiry_display",
+                              "count"}   count = units with this barcode and date in the list
 GET  /scans?limit=20       latest records
 ```
 
@@ -485,10 +489,14 @@ the home folder. The Pi 5 time zone must be Europe/Berlin (`timedatectl`).
 - **Cleanup** after midnight: expired products are deleted together with their photos.
 - `/list` — everything scanned, in groups: 🔴 within 3 days, 🟠 within 30 days, 🟡 within 3 months,
   🟢 later. The date on the left (monospace, in a straight column), the name without the brand on
-  the right. The "🗑 Delete…" button under the list: products as buttons (8 per page) →
-  confirmation → the list is updated in the same message.
+  the right. The same product with the same date is one line with **×N** (each unit is still its
+  own database row with its own photo). The "🗑 Delete…" button under the list: products as
+  buttons (8 per page) → confirmation → the list is updated in the same message. For ×N the
+  confirmation offers "Delete duplicates (1 left)" — removes every unit except the first scanned
+  one — and, from ×3 on, also "Delete 1" (removes the last scanned unit).
 - `/del_<id>` — delete by number (also works for links in old messages).
-- `/soon` — what expires in the next days (all of them, not only new ones).
+- `/soon` — what expires in the next days (all of them, not only new ones). Reminders and `/soon`
+  also show ×N.
 - `/lang` — Russian / English, per chat.
 - `/stop` — no more reminders, `/start` — reminders again.
 

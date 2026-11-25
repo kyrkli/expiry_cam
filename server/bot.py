@@ -88,9 +88,14 @@ TEXTS = {
         "g_later": "Позже",
         "btn_delete_menu": "🗑 Удалить…",
         "btn_delete_this": "🗑 Удалить: {name}",
+        "btn_delete_one": "🗑 Удалить 1 (останется {left})",
+        "btn_delete_dupe": "🗑 Удалить повтор (останется 1)",
+        "btn_delete_dupes": "🗑 Удалить повторы: {n} шт. (останется 1)",
         "btn_back": "⬅ Назад",
         "btn_close": "✖ Отмена",
         "toast_deleted": "Удалено: {name}",
+        "toast_deleted_dupe": "Удалён повтор · {name}",
+        "toast_deleted_dupes": "Удалено повторов: {n} · {name}",
         "soon_title": "⏰ <b>Истекает в ближайшие {days_word}</b>",
         "soon_empty": "В ближайшие {days_word} ничего не истекает.",
         "confirm": "Удалить «{name}» ({date})?",
@@ -127,9 +132,14 @@ TEXTS = {
         "g_later": "Later",
         "btn_delete_menu": "🗑 Delete…",
         "btn_delete_this": "🗑 Delete: {name}",
+        "btn_delete_one": "🗑 Delete 1 ({left} left)",
+        "btn_delete_dupe": "🗑 Delete duplicate (1 left)",
+        "btn_delete_dupes": "🗑 Delete {n} duplicates (1 left)",
         "btn_back": "⬅ Back",
         "btn_close": "✖ Cancel",
         "toast_deleted": "Deleted: {name}",
+        "toast_deleted_dupe": "Deleted duplicate · {name}",
+        "toast_deleted_dupes": "Deleted {n} duplicates · {name}",
         "soon_title": "⏰ <b>Expiring within {days_word}</b>",
         "soon_empty": "Nothing expires within {days_word}.",
         "confirm": "Delete “{name}” ({date})?",
@@ -355,18 +365,49 @@ GROUPS = [
 DELETE_PAGE = 8          # products per page in the delete menu
 
 
+def same_products(items: List[dict]) -> List[dict]:
+    """Units of the same product with the same date become one entry with 'ids' and
+    'count'. Units without a barcode stay single. Keeps the order (by expiry date)."""
+    entries, by_key = [], {}
+    for p in items:
+        key = (p["barcode"], p["expires_on"]) if p.get("barcode") else ("single", p["id"])
+        if key in by_key:
+            by_key[key]["ids"].append(p["id"])
+            by_key[key]["count"] += 1
+        else:
+            entry = dict(p, ids=[p["id"]], count=1)
+            by_key[key] = entry
+            entries.append(entry)
+    return entries
+
+
+def entry_of(items: List[dict], scan_id: int) -> Optional[dict]:
+    """The entry (product + date) that contains this scan id."""
+    return next((e for e in same_products(items) if scan_id in e["ids"]), None)
+
+
+def times(e: dict, html_bold: bool = True) -> str:
+    """' ×2' (bold in messages) for several units, nothing for one."""
+    if e.get("count", 1) <= 1:
+        return ""
+    return f" <b>×{e['count']}</b>" if html_bold else f" ×{e['count']}"
+
+
 def list_lines(lang: str, items: List[dict]) -> List[str]:
-    """/list text: products grouped by how soon they expire, date column + full name."""
+    """/list text: products grouped by how soon they expire, date column + full name,
+    the same product with the same date once with ×N."""
     today = date.today()
     lines = [t(lang, "list_title", n=len(items))]
-    rest = list(items)                          # already sorted by expiry date
+    rest = same_products(items)                 # already sorted by expiry date
     for limit, emoji, key in GROUPS:
-        group = [p for p in rest if limit is None or days_left(p, today) <= limit]
+        group = [e for e in rest if limit is None or days_left(e, today) <= limit]
         if not group:
             continue
         rest = rest[len(group):]
-        lines += ["", f"{emoji} <b>{t(lang, key, days=days_until(lang, REMIND_DAYS))}</b> ({len(group)})"]
-        lines += [f"{date_cell(p)} {product_name(lang, p, brand=False)}" for p in group]
+        units = sum(e["count"] for e in group)
+        lines += ["", f"{emoji} <b>{t(lang, key, days=days_until(lang, REMIND_DAYS))}</b> ({units})"]
+        lines += [f"{date_cell(e)} {product_name(lang, e, brand=False)}{times(e)}"
+                  for e in group]
     return lines
 
 
@@ -375,12 +416,13 @@ def list_buttons(lang: str) -> list:
 
 
 def delete_buttons(lang: str, items: List[dict], page: int) -> list:
-    """One button per product (current page), page switcher, cancel."""
-    pages = max(1, -(-len(items) // DELETE_PAGE))
+    """One button per product and date (current page), page switcher, cancel."""
+    entries = same_products(items)
+    pages = max(1, -(-len(entries) // DELETE_PAGE))
     page = max(0, min(page, pages - 1))
-    rows = [[{"text": f"{short_date(p)} · {plain_name(lang, p, brand=False)}",
-              "callback_data": f"lm:ask:{p['id']}:{page}"}]
-            for p in items[page * DELETE_PAGE:(page + 1) * DELETE_PAGE]]
+    rows = [[{"text": f"{short_date(e)} · {plain_name(lang, e, brand=False)}{times(e, False)}",
+              "callback_data": f"lm:ask:{e['id']}:{page}"}]
+            for e in entries[page * DELETE_PAGE:(page + 1) * DELETE_PAGE]]
     if pages > 1:
         rows.append([{"text": "◀", "callback_data": f"lm:del:{(page - 1) % pages}"},
                      {"text": f"{page + 1}/{pages}", "callback_data": "lm:noop"},
@@ -389,10 +431,21 @@ def delete_buttons(lang: str, items: List[dict], page: int) -> list:
     return rows
 
 
-def confirm_buttons(lang: str, p: dict, page: int) -> list:
-    return [[{"text": t(lang, "btn_delete_this", name=plain_name(lang, p, brand=False)),
-              "callback_data": f"lm:yes:{p['id']}:{page}"}],
-            [{"text": t(lang, "btn_back"), "callback_data": f"lm:del:{page}"}]]
+def confirm_buttons(lang: str, e: dict, page: int) -> list:
+    """One unit: "Delete: name". Two: "Delete duplicate". Three or more: "Delete 1"
+    (the last scanned) or "Delete duplicates" (all but the first scanned)."""
+    back = [{"text": t(lang, "btn_back"), "callback_data": f"lm:del:{page}"}]
+    if e["count"] == 1:
+        return [[{"text": t(lang, "btn_delete_this", name=plain_name(lang, e, brand=False)),
+                  "callback_data": f"lm:yes:{e['id']}:{page}"}], back]
+    dupes = e["count"] - 1
+    rows = []
+    if dupes > 1:      # with two units "Delete 1" and "Delete duplicates" would be the same
+        rows.append([{"text": t(lang, "btn_delete_one", left=dupes),
+                      "callback_data": f"lm:yes:{max(e['ids'])}:{page}"}])
+    text = t(lang, "btn_delete_dupes", n=dupes) if dupes > 1 else t(lang, "btn_delete_dupe")
+    rows.append([{"text": text, "callback_data": f"lm:dup:{e['id']}:{page}"}])
+    return rows + [back]
 
 
 def cmd_list(chat_id: int, lang: str) -> None:
@@ -427,7 +480,7 @@ def cmd_soon(chat_id: int, lang: str) -> None:
         send(chat_id, t(lang, "soon_empty", days_word=dw))
         return
     lines = [t(lang, "soon_title", days_word=dw), ""]
-    lines += [reminder_line(lang, p, today) for p in items]
+    lines += [reminder_line(lang, e, today) for e in same_products(items)]
     send_long(chat_id, lines)
 
 
@@ -447,9 +500,9 @@ def cmd_lang(chat_id: int) -> None:
                    {"text": "English", "callback_data": "lang:en"}]])
 
 
-def reminder_line(lang: str, p: dict, today: date) -> str:
-    return (f"{date_cell(p)} {product_name(lang, p, brand=False)}"
-            f" — <i>{when(lang, days_left(p, today))}</i>")
+def reminder_line(lang: str, e: dict, today: date) -> str:
+    return (f"{date_cell(e)} {product_name(lang, e, brand=False)}{times(e)}"
+            f" — <i>{when(lang, days_left(e, today))}</i>")
 
 
 # --- update handling ---------------------------------------------------------------------
@@ -556,18 +609,30 @@ def handle_list_button(data: str, chat_id: int, message_id: int, lang: str,
         edit_buttons(chat_id, message_id, list_buttons(lang) if items else None)
     elif action == "ask":
         scan_id, page = int(parts[2]), int(parts[3])
-        p = next((x for x in items if x["id"] == scan_id), None)
-        if p is None:
+        e = entry_of(items, scan_id)
+        if e is None:
             refresh_list(chat_id, message_id, lang)
             return t(lang, "not_found")
-        edit_buttons(chat_id, message_id, confirm_buttons(lang, p, page))
-    elif action == "yes":
+        edit_buttons(chat_id, message_id, confirm_buttons(lang, e, page))
+    elif action == "yes":                                  # one unit
         p = db.delete_product(int(parts[2]))
         refresh_list(chat_id, message_id, lang)
         if p is None:
             return t(lang, "not_found")
         log.info("deleted scan %s by user %s", p["id"], user.get("id"))
         return t(lang, "toast_deleted", name=plain_name(lang, p, brand=False))[:190]
+    elif action == "dup":                                  # all units but the first scanned
+        e = entry_of(items, int(parts[2]))
+        extra = sorted(e["ids"])[1:] if e else []
+        deleted = [d for d in (db.delete_product(i) for i in extra) if d]
+        refresh_list(chat_id, message_id, lang)
+        if not deleted:
+            return t(lang, "not_found")
+        log.info("deleted duplicate scans %s by user %s", [d["id"] for d in deleted],
+                 user.get("id"))
+        key = "toast_deleted_dupes" if len(deleted) > 1 else "toast_deleted_dupe"
+        return t(lang, key, name=plain_name(lang, deleted[0], brand=False),
+                 n=len(deleted))[:190]
     return None
 
 
@@ -592,9 +657,10 @@ def send_reminders(today: date) -> bool:
         return True
 
     sent = 0
+    entries = same_products(items)
     for c in chats:
         lang = c["lang"] if c["lang"] in TEXTS else "ru"
-        lines = [t(lang, "reminder"), ""] + [reminder_line(lang, p, today) for p in items]
+        lines = [t(lang, "reminder"), ""] + [reminder_line(lang, e, today) for e in entries]
         try:
             send_long(c["chat_id"], lines)
             sent += 1

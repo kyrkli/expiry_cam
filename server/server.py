@@ -9,7 +9,8 @@ Endpoints:
                             No date found: scan_id = null, nothing is stored in the database
                             (the photo goes to uploads/failed/ for OCR tuning).
     POST /barcode           JSON {"barcode": "...", "scan_id": int | null}
-                            -> {"barcode", "product", "brand", "quantity", "scan_id", "expiry_display"}
+                            -> {"barcode", "product", "brand", "quantity", "scan_id",
+                                "expiry_display", "count"}
     GET  /scans?limit=50    -> recent scans
 
 Run:
@@ -152,9 +153,13 @@ def _process_barcode(code: str, scan_id: Optional[int]) -> dict:
     product = products.lookup(code)
     name = product["name"] if product else None
     brand = product["brand"] if product else None
+    count = None
     if scan:
         db.attach_barcode(scan_id, norm, name, brand)
-        log.info("scan %d <- barcode %s (%s)", scan_id, norm, name)
+        # Same product with the same date already in the list: the scanner shows "×2"
+        count = db.count_same(norm, scan.get("expires_on"))
+        log.info("scan %d <- barcode %s (%s)%s", scan_id, norm, name,
+                 f", now x{count} in the list" if count > 1 else "")
 
     return {
         "barcode": norm,
@@ -163,6 +168,7 @@ def _process_barcode(code: str, scan_id: Optional[int]) -> dict:
         "quantity": product["quantity"] if product else None,
         "scan_id": scan_id,
         "expiry_display": dates.display(scan["parsed_expiry_date"]) if scan else None,
+        "count": count,     # units with this barcode and date in the list, None = not saved
     }
 
 

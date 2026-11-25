@@ -226,11 +226,15 @@ def draw_expired(d, t, date="", days_left=None):
     center(d, 47, days_text(days_left), F10, fill=0)
 
 
-def draw_product(d, t, name=None, code="", saved=False, date=None):
+def draw_product(d, t, name=None, code="", saved=False, date=None, count=None):
     lines = wrap(d, name, B12) if name else ["Unknown product", code]
     for i, line in enumerate(lines):
         center(d, 16 + i * 15, line, B12 if (name or i == 0) else F10)
-    if saved:
+    if saved and count and count > 1:
+        # Same product with the same date was already in the list: white bar, can't miss it
+        d.rectangle((0, 48, W - 1, H - 1), fill=1)
+        center(d, 50, f"Already in list · now ×{count}", F10, fill=0)
+    elif saved:
         text = "Saved" + (f" · {date}" if date else "")
         x = (W - 14 - d.textlength(text, font=F10)) / 2
         icon_check(d, x, 52)

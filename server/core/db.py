@@ -221,6 +221,18 @@ def mark_notified(ids: List[int]) -> None:
         conn.executemany("UPDATE scans SET notified = 1 WHERE id = ?", [(i,) for i in ids])
 
 
+def count_same(barcode: str, expires_on: Optional[str]) -> int:
+    """How many units of this product with this expiry date are in the list."""
+    if not barcode or not expires_on:
+        return 1
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM scans WHERE source = 'scanner' AND barcode = ? AND expires_on = ?",
+            (barcode, expires_on),
+        ).fetchone()
+        return int(row[0])
+
+
 def delete_product(scan_id: int) -> Optional[dict]:
     """Delete one scanner row and its photo. Returns the deleted row or None."""
     with connect() as conn:

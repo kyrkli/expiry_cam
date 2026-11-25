@@ -283,7 +283,8 @@ class App:
         res = client.send_barcode(code, scan_id)
         date = res.get("expiry_display") or (pending or {}).get("date")
         return ("product", dict(name=res.get("product"), code=res.get("barcode") or code,
-                                saved=scan_id is not None, date=date), CLEAR)
+                                saved=scan_id is not None, date=date,
+                                count=res.get("count")), CLEAR)
 
 
 def error_screen(e):
