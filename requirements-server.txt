@@ -8,3 +8,9 @@ opencv-contrib-python==4.6.0.66
 # OCR stack (verified working on this setup)
 paddlepaddle==2.6.2
 paddleocr==2.7.3
+
+# Extra packages for server.py (PaddleOCR, numpy and opencv are already in the venv)
+starlette
+uvicorn
+python-multipart
+requests

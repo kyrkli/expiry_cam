@@ -1,0 +1,16 @@
+[Unit]
+Description=Expiry cam Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=rasient
+WorkingDirectory=/home/rasient/expiry_cam
+EnvironmentFile=/home/rasient/expiry_cam/bot.env
+ExecStart=/home/rasient/expiry_cam/.venv/bin/python bot.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

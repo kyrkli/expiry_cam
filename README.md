@@ -1,26 +1,53 @@
 # Expiry cam project
-- Project for managing expiry dates on products using Raspberry Pi and camera module. The project captures images of expiry dates, processes them, and extracts the relevant information for further analysis. 
-- User takes a photo of the expiry date using a hand scanner (to be developed) or a mobile phone, and the image is sent to the Raspberry Pi for processing. The system extracts the expiry date from the image, then user scans the product barcode and the system associates the expiry date with the product in a database. 
+- Project for managing expiry dates on products using main station Raspberry Pi 5 and hand scanner. The project captures images of expiry dates, processes them, and extracts the relevant information for further analysis. 
+- User takes a photo of the expiry date using a hand scanner (to be developed) or a mobile phone (outside of the scope currently), and the image is sent to the Raspberry Pi for processing. The system extracts the expiry date from the image, then user scans the product barcode and the system associates the expiry date with the product in a database. 
 - Telegram bot is used for notifications and interaction with the user. It sends notifications about approaching expiry dates and allows users to query the status of products.
 
+## System architecture
+```
+Hand scanner (Pi 3A+)                                          Main station (Pi 5, 8GB)
+──────────────────────────────────────────────────────────────────────────────────────────────
+[button] short press
+  → rpicam-still capture   ──POST /image (JPEG, 5GHz WiFi)──▶  FastAPI ingest
+[button] barcode trigger                                       → OCR pipeline (expiry date)
+  → GM67 UART scan         ──POST /barcode (EAN-13)─────────▶  → Open Food Facts lookup
+
+SQLite/Postgres DB
+[OLED status]              ◀── ack / status ──                 → Telegram bot (notifications)
+```
+
 ## Hardware structure
+### Main station
 - Raspberry Pi 5, 8GB RAM
 - Active Cooler
 - Raspberry Pi 27W USB-C Power Supply
 - MicroSD A2
-- Raspberry Pi camera module v3 (temporary, to be replaced with a hand scanner)
 
-### Scanner structure (to be developed)
-- Microcontroller suited to take pictures by camera module and send it via wifi to main station (tba.)
-- Raspberry Pi camera module v3
-- 3D printed case with a button to take pictures
-- NeoPixel Ring (WS2812B 12 or 16 diodes) (optional)
-- Display to show the status of the scanner (tba.)
-- Laser sensor to scan the barcode of the product (tba.)
+### Scanner component list
 
+| Component | Choice | Note |
+|-----------|--------|------|
+| Compute (have, berrybase) | **Raspberry Pi 3A+** | 5 GHz WiFi, native 15-pin CSI for v3 (chosen over Zero 2 W) |
+| MicroSD (have, amazon) | "SANDISK 64GB A2 Extreme microSDXC Card + SD Adapter, up to 170 MB/s Read" | For **Raspberry Pi 3A+** |
+| Camera (have, berrybase) | Raspberry Pi Camera Module v3 | IMX708, autofocus |
+| Barcode (have, aliexpress) | WAVGAT GM67 UART module (~12 €) | UART 3.3V Logic Level |
+| Trigger (have, ebay, DIDNT USED) | Omron D2F-01L | Short = photo, long = barcode |
+| Trigger (have, amazon) | Button Push & Hold-ON, Release-OFF | Short = photo, long = barcode |
+| Display (have) | 1,3 Zoll OLED I2C 128x64 Pixel | WiFi / success / queue status, bad image |
+| [Power] Accumulator (have, akkuteile) | Keeppower 2S1P 18650 3400 mAh (NCR18650B, BMS 4–7 A) | 7.2 V nom / 8.4 V full / cutoff 5.0 V; charge 8.4 V CC-CV (normal 1625 mA, fast 2380 mA); wires: red +, black −, white = Temp (isolated) |
+| [Power] Power Button (have, amazon) | Button Push & Hold-ON, Release-OFF | 1 Long = Shutdown, 2 Short = Reboot |
+| [Power] Buck Converter (have, eBay) | Mini560 PRO 5V 5A + heatsink | synchronous buck, fixed 5.0 V DC out, real continuous ~3 A (rated 5 A only peak) |
+| [Power] USB Charging Module (have, amazon) | Hailege 2S USB-C boost charger, 8.4 V CC/CV | style "2S 2A" (2 pcs); "2A" = input current, real charge 1.1 A |
+| [Power] Switch (have, aliexpress) | Rocker Switch 3 pin KCD3 | For modes {Power ON / Power OFF / Charge the device} |
+| [Power] Battery charge status (have, amazon) | ADS1115 16-bit I2C ADC module + divider 100k/47k (1%) + 100nF Ceramic Capacitor | For monitoring battery voltage and charge level |
+| [Power] JST-XH 2-pin kit (have, amazon) | 22 AWG | For connection betweenbattery and other components |
+| [Power] Micro usb connector (have, amazon) | For powering raspberry pi via USB | |
+| [Build] Case (develop) | 3D-printed wand/pistol grip | Camera + GM67 at nose, battery in the handle |
+| [Build] Screws (have, amazon) | FandWay 900 pcs M2/M2.5/M3 | Cylinder head hex socket (DIN912-style) |
+| [Build] Heat-set inserts (have, aliexpress) | | Kit 750 pcs brass knurled, 15 sizes, M2/M2.5/M3 only |
+| [Build] Wires (have, amazon) | AWG 22 for power, AWG 28 for signals | |
 
-
-## Capture settings
+## Capture settings/
 ```
 command = [
     "rpicam-still",
@@ -36,7 +63,7 @@ command = [
     "-o", save_path
 ]
 ```
-- "--ev", "-1.5" could help to reduce glare, but it is not always effective. The best way to reduce glare is to use a polarizing filter on the camera lens. 
+- "--ev", "-1.5" could help to reduce glare, but it is not always effective. The best way to reduce glare is to use a polarizing filter on the camera lens.
 
 ## Data set
 |Category|Meaning|Count|
@@ -50,7 +77,6 @@ command = [
 |[**lowc**]|Low contrast of the expiry date|15|
 |[**norm**]|Expiry date represented ideally|9|
 |[**vert**]|Expiry date written vertically|8|
-
 
 ### Best result
 ```

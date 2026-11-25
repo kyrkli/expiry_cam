@@ -1,6 +1,7 @@
 # Python virtual environment
 .venv/
 __pycache__/
+.github/
 
 # Database files
 *.db
@@ -11,4 +12,5 @@ __pycache__/
 *.png
 
 # Environment variables (for Telegram Bot token later)
-.env
+*.env   
+dont_track/

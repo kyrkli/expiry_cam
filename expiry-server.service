@@ -1,0 +1,19 @@
+[Unit]
+Description=Expiry cam main station server (OCR + barcode lookup)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Runs as your normal user, so PaddleOCR finds the models it already downloaded
+# into this user's home directory.
+User=rasient
+WorkingDirectory=/home/rasient/expiry_cam
+ExecStart=/home/rasient/expiry_cam/.venv/bin/python -m uvicorn server:app --host 0.0.0.0 --port 8000
+Environment=PYTHONUNBUFFERED=1
+# Optional: your own contact for the Open Food Facts User-Agent
+#Environment="EXPIRYCAM_USER_AGENT=ExpiryCam/0.1 (your contact here)"
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
